@@ -1,0 +1,30 @@
+name:                untilbot
+version:             0.1.0.0
+synopsis:            A bot for Telegram that makes you complete tasks
+description:
+  A bot for Telegram that makes you complete tasks
+homepage:            http://github.com/neongreen/untilbot
+bug-reports:         http://github.com/neongreen/untilbot/issues
+license:             BSD3
+license-file:        LICENSE
+author:              Artyom
+maintainer:          yom@artyom.me
+-- copyright:           
+category:            Web
+tested-with:         GHC == 7.10.3
+build-type:          Simple
+extra-source-files:  CHANGELOG.md
+cabal-version:       >=1.10
+
+source-repository head
+  type:                git
+  location:            git://github.com/neongreen/untilbot.git
+
+executable untilbot
+  main-is:             Main.hs
+  -- other-modules:       
+  -- other-extensions:    
+  build-depends:       base >=4.8 && <4.9
+  ghc-options:         -Wall -fno-warn-unused-do-bind
+  hs-source-dirs:      src
+  default-language:    Haskell2010

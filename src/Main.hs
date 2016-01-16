@@ -27,7 +27,7 @@ main = do
 
 echoMessages :: Telegram ()
 echoMessages = do
-  messages <- map message <$> getUpdates
+  messages <- getMessages
   for_ messages $ \Message{..} -> do
     case text of
       Nothing -> return ()

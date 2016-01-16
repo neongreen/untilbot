@@ -172,5 +172,9 @@ getUpdates = do
   liftState $ modify $ \s -> s {nextOffset = max (succ <$> maxId) mbOffset}
   return updates
 
+-- | Note that this will ignore all non-message updates (such as inline queries).
+getMessages :: Telegram [Message]
+getMessages = map message <$> getUpdates
+
 sendMessage :: Integer -> Text -> Telegram Message
 sendMessage chat_id text = result <$> runRoute (sendMessageRoute chat_id text)

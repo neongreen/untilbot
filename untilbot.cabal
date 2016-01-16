@@ -22,7 +22,7 @@ source-repository head
 
 executable untilbot
   main-is:             Main.hs
-  -- other-modules:       
+  other-modules:       Telegram
   -- other-extensions:    
   build-depends:       aeson >= 0.9.0.1
                      , api-builder == 0.11.*

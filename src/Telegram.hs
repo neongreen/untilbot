@@ -10,6 +10,8 @@ module Telegram where
 
 -- General
 import BasePrelude
+-- Monads
+import Control.Monad.State
 -- Text
 import Data.Text (Text)
 -- ByteString
@@ -23,10 +25,15 @@ import Network.HTTP.Client
 
 type Token = Text
 
-type Telegram a = API () Err a
+type Telegram a = API TelegramState Err a
 
+-- TODO: save state somewhere so that it'd be preserved on exit
 runTelegram :: Token -> Telegram a -> IO (Either (APIError Err) a)
-runTelegram token = execAPI (telegram token) ()
+runTelegram token = execAPI (telegram token) TelegramState {
+  nextOffset = Nothing }
+
+data TelegramState = TelegramState {
+  nextOffset :: Maybe Integer }
 
 data User = User {
   user_id    :: Integer,
@@ -69,7 +76,8 @@ instance FromJSON Chat where
 
 data Update = Update {
   update_id :: Integer,
-  message   :: Message } -- actually Maybe Message
+  -- TODO: actually Maybe Message
+  message   :: Message }
   deriving (Show, Eq)
 
 data Updates = Updates {
@@ -151,8 +159,18 @@ instance ErrorReceivable Err where
 getMe :: Telegram User
 getMe = result <$> runRoute getMeRoute
 
-getUpdates :: Maybe Integer -> Telegram [Update]
-getUpdates mbOffset = updates . result <$> runRoute (getUpdatesRoute mbOffset)
+getUpdates_ :: Maybe Integer -> Telegram [Update]
+getUpdates_ mbOffset = updates . result <$> runRoute (getUpdatesRoute mbOffset)
+
+getUpdates :: Telegram [Update]
+getUpdates = do
+  mbOffset <- liftState $ gets nextOffset
+  updates <- getUpdates_ mbOffset
+  let maxId = case updates of
+        [] -> Nothing
+        _  -> Just $ maximum (map update_id updates)
+  liftState $ modify $ \s -> s {nextOffset = max (succ <$> maxId) mbOffset}
+  return updates
 
 sendMessage :: Integer -> Text -> Telegram Message
 sendMessage chat_id text = result <$> runRoute (sendMessageRoute chat_id text)

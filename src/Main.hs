@@ -20,17 +20,17 @@ import Telegram
 main :: IO ()
 main = do
   token <- T.readFile "telegram-token"
-  let go offset = do
-        msgs <- getUpdates offset
-        for_ msgs $ \Update{..} ->
-          case text message of
-            Nothing -> return ()
-            Just s  -> do
-              liftIO $ T.putStrLn s
-              sendMessage (chat_id (chat message)) s
-              return ()
-        let maxId = case msgs of
-              [] -> Nothing
-              _  -> Just $ maximum (map update_id msgs)
-        go $ (succ <$> maxId) <|> offset
-  either print void =<< runTelegram token (go Nothing)
+  result <- runTelegram token (forever echoMessages)
+  case result of
+    Left err -> print err
+    Right _  -> return ()
+
+echoMessages :: Telegram ()
+echoMessages = do
+  messages <- map message <$> getUpdates
+  for_ messages $ \Message{..} -> do
+    case text of
+      Nothing -> return ()
+      Just s  -> void $ do
+        liftIO $ T.putStrLn s
+        sendMessage (chat_id chat) s

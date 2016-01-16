@@ -10,8 +10,7 @@ module Main where
 -- General
 import BasePrelude
 -- Monad transformers
-import Control.Monad.Reader
-import Control.Monad.Except
+import Control.Monad.IO.Class
 -- Text
 import qualified Data.Text.IO as T
 -- Telegram
@@ -34,4 +33,4 @@ main = do
               [] -> Nothing
               _  -> Just $ maximum (map update_id msgs)
         go $ (succ <$> maxId) <|> offset
-  either print void =<< runExceptT (runReaderT (go Nothing) token)
+  either print void =<< runTelegram token (go Nothing)

@@ -10,9 +10,6 @@ module Telegram where
 
 -- General
 import BasePrelude
--- Monad transformers
-import Control.Monad.Reader
-import Control.Monad.Except
 -- Text
 import Data.Text (Text)
 -- ByteString
@@ -26,7 +23,10 @@ import Network.HTTP.Client
 
 type Token = Text
 
-type Telegram a = ReaderT Token (ExceptT (APIError Err) IO) a
+type Telegram a = API () Err a
+
+runTelegram :: Token -> Telegram a -> IO (Either (APIError Err) a)
+runTelegram token = execAPI (telegram token) ()
 
 data User = User {
   user_id    :: Integer,
@@ -149,16 +149,10 @@ instance ErrorReceivable Err where
   receiveError = useErrorFromJSON
 
 getMe :: Telegram User
-getMe = do
-  token <- ask
-  lift $ fmap result $ ExceptT $ execAPI (telegram token) () $ runRoute getMeRoute
+getMe = result <$> runRoute getMeRoute
 
 getUpdates :: Maybe Integer -> Telegram [Update]
-getUpdates mbOffset = do
-  token <- ask
-  lift $ fmap (updates . result) $ ExceptT $ execAPI (telegram token) () $ runRoute (getUpdatesRoute mbOffset)
+getUpdates mbOffset = updates . result <$> runRoute (getUpdatesRoute mbOffset)
 
 sendMessage :: Integer -> Text -> Telegram Message
-sendMessage chat_id text = do
-  token <- ask
-  lift $ fmap result $ ExceptT $ execAPI (telegram token) () $ runRoute (sendMessageRoute chat_id text)
+sendMessage chat_id text = result <$> runRoute (sendMessageRoute chat_id text)

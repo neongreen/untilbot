@@ -10,7 +10,7 @@ module Main where
 -- General
 import BasePrelude
 -- Monad transformers
-import Control.Monad.IO.Class
+import Control.Monad.Except
 -- Text
 import qualified Data.Text.IO as T
 -- Telegram
@@ -18,19 +18,14 @@ import Telegram
 
 
 main :: IO ()
-main = do
+main = void $ do
   token <- T.readFile "telegram-token"
-  result <- runTelegram token (forever echoMessages)
-  case result of
-    Left err -> print err
-    Right _  -> return ()
+  runTelegram token $ echoMessages `catchError` (liftIO . print)
 
 echoMessages :: Telegram ()
-echoMessages = do
-  messages <- getMessages
-  for_ messages $ \Message{..} -> do
-    case text of
-      Nothing -> return ()
-      Just s  -> void $ do
-        liftIO $ T.putStrLn s
-        sendMessage (chat_id chat) s
+echoMessages = onUpdateLoop $ \Update{..} ->
+  case text message of
+    Nothing  -> return ()
+    Just str -> void $ do
+      liftIO $ T.putStrLn str
+      respond message str

@@ -178,3 +178,11 @@ getMessages = map message <$> getUpdates
 
 sendMessage :: Integer -> Text -> Telegram Message
 sendMessage chat_id text = result <$> runRoute (sendMessageRoute chat_id text)
+
+respond :: Message -> Text -> Telegram Message
+respond msg text = sendMessage (chat_id (chat msg)) text
+
+onUpdateLoop :: (Update -> Telegram a) -> Telegram ()
+onUpdateLoop handler = forever $ do
+  updates <- getUpdates
+  mapM_ handler updates

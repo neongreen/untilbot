@@ -16,6 +16,10 @@ import BasePrelude hiding (
   readMVar, takeMVar, newMVar, putMVar, modifyMVar_ )
 -- Monad transformers
 import Control.Monad.Except
+import Control.Monad.Trans.Maybe
+-- Containers
+import Data.Map (Map)
+import qualified Data.Map as M
 -- Text
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,7 +50,7 @@ main = void $ do
 bot :: Telegram ()
 bot = do
   -- Create a variable holding all goals.
-  goalsVar <- newMVar []
+  goalsVar <- newMVar mempty
   -- Run the loop that checks all goals every second, sends messages
   -- about ones that have ended, and leaves those that haven't ended yet.
   fork $ forever $ ignoreErrors $ do
@@ -60,25 +64,32 @@ bot = do
   onUpdateLoop $ \Update{..} ->
     ignoreErrors $ ignoreExceptions $ processMessage goalsVar message
 
-processMessage :: MVar [Goal] -> Message -> Telegram ()
-processMessage goalsVar message = do
+processMessage :: MVar (Map UserId Goal) -> Message -> Telegram ()
+processMessage goalsVar message = void $ runMaybeT $ do
+  -- Both user and message text have to be present (otherwise we don't do
+  -- anything).
+  -- 
+  -- from message :: Maybe User
+  -- text message :: Maybe Text
+  -- 
+  -- Read about MaybeT if you don't understand how this works.
+  user <- liftMaybe (from message)
+  text <- liftMaybe (text message)
+
   let schedule :: Goal -> Telegram ()
-      schedule x = modifyMVar_ goalsVar (\xs -> return (x:xs))
+      schedule goal = modifyMVar_ goalsVar $ \m ->
+        return (M.insert (user_id user) goal m)
 
-  case text message of
-    -- A sound or a sticker or whatever instead of text; ignoring
-    Nothing -> return ()
-
+  lift $ case text of
     -- “?” means “query status”; show active goal to the user
-    Just "?" -> void $ do
+    "?" -> void $ do
       goals <- readMVar goalsVar
-      let thisChat = chat_id (chat message)
-          goalChat = chat_id . chat . originalMessage
-      status <- liftIO $ showStatus (filter ((== thisChat) . goalChat) goals)
+      let mbGoal = M.lookup (user_id user) goals
+      status <- liftIO $ showStatus mbGoal
       respond message status
 
-    -- If it's a valid goal that can be parsed, schedule it
-    Just str | Just (seconds, goalText) <- parseGoal str -> do
+    -- If the message a valid goal that can be parsed, schedule it
+    _ | Just (seconds, goalText) <- parseGoal text -> do
       currentTime <- liftIO $ getCurrentTime
       let endTime = addUTCTime (fromIntegral seconds) currentTime
       schedule Goal {
@@ -96,20 +107,18 @@ data Goal = Goal {
   originalMessage :: Message,
   goalText        :: Text }
 
-findFinishedGoals :: [Goal] -> IO ([Goal], [Goal])
-findFinishedGoals xs = do
+findFinishedGoals :: Map UserId Goal
+                  -> IO (Map UserId Goal, Map UserId Goal)
+findFinishedGoals m = do
   currentTime <- getCurrentTime
-  return (partition ((< currentTime) . goalEnd) xs)
+  return (M.partition ((< currentTime) . goalEnd) m)
 
-showStatus :: [Goal] -> IO Text
-showStatus xs = do
+showStatus :: Maybe Goal -> IO Text
+showStatus Nothing  = return "you're not doing anything"
+showStatus (Just x) = do
   currentTime <- getCurrentTime
-  let showLeft x = showDuration (diffUTCTime (goalEnd x) currentTime)
-  return $ case xs of
-    []  -> "you're not doing anything"
-    [x] -> format "{}\n{} left" (quote (goalText x), showLeft x)
-    _   -> "somehow you managed to be doing more than one goal at once, \
-           \it's a bug"
+  let leftTime = showDuration (diffUTCTime (goalEnd x) currentTime)
+  return $ format "{}\n{} left" (quote (goalText x), leftTime)
 
 -- Parsing
 
@@ -172,3 +181,6 @@ format f ps = TL.toStrict (Format.format f ps)
 
 quote :: Text -> Text
 quote = T.unlines . map ("> " <>) . T.lines
+
+liftMaybe :: Monad m => Maybe a -> MaybeT m a
+liftMaybe = MaybeT . return

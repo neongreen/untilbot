@@ -10,11 +10,12 @@ module Telegram
   module Data.Default.Class,
 
   -- * Running API
+  Token,
   Telegram,
   runTelegram,
 
   -- * Types
-  Token,
+  UserId,
   User(..),
   Chat(..),
   Update(..),
@@ -62,8 +63,10 @@ runTelegram token = execAPI (telegram token) TelegramState {
 data TelegramState = TelegramState {
   nextOffset :: Maybe Integer }
 
+type UserId = Integer
+
 data User = User {
-  user_id    :: Integer,
+  user_id    :: UserId,
   first_name :: Text,
   last_name  :: Maybe Text,
   username   :: Maybe Text }

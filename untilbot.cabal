@@ -35,6 +35,7 @@ executable untilbot
                      , megaparsec >= 0.4.3
                      , mtl == 2.2.*
                      , text == 1.2.*
+                     , text-format >= 0.3.1
                      , time >= 1.5.0.1
                      , transformers >= 0.4.2.0
   ghc-options:         -Wall -fno-warn-unused-do-bind

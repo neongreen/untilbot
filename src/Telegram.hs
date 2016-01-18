@@ -5,7 +5,32 @@ NoImplicitPrelude
   #-}
 
 
-module Telegram where
+module Telegram
+(
+  module Data.Default.Class,
+
+  -- * Running API
+  Telegram,
+  runTelegram,
+
+  -- * Types
+  Token,
+  User(..),
+  Chat(..),
+  Update(..),
+  Message(..),
+
+  -- * Methods and operations
+  getMe,
+  getUpdates,
+  getMessages,
+  SendMessageParams(..),
+  sendMessage, sendMessage',
+  respond, respond',
+  reply,
+  onUpdateLoop,
+)
+where
 
 
 -- General
@@ -18,6 +43,8 @@ import Data.Text (Text)
 import qualified Data.ByteString.Char8 as B8
 -- JSON
 import Data.Aeson as Aeson
+-- Default
+import Data.Default.Class
 -- interaction with Telegram API
 import Network.API.Builder
 import Network.HTTP.Client
@@ -137,10 +164,19 @@ getUpdatesRoute mbOffset = Route {
   urlParams  = [case mbOffset of Nothing -> []; Just x -> "offset" =. x],
   httpMethod = "GET" }
 
-sendMessageRoute :: Integer -> Text -> Route
-sendMessageRoute chat_id text = Route {
+sendMessageRoute :: Integer -> Text -> SendMessageParams -> Route
+sendMessageRoute chat_id text SendMessageParams{..} = Route {
   urlPieces  = ["sendMessage"],
-  urlParams  = ["chat_id" =. chat_id, "text" =. text],
+  urlParams  = [
+      "chat_id" =. chat_id,
+      "text"    =. text,
+      case parseMode of
+        Normal   -> []
+        Markdown -> "parse_mode" =. ("Markdown" :: Text),
+      "disable_web_page_preview" =. disableWebPagePreview,
+      case replyTo of
+        Nothing -> []
+        Just i  -> "reply_to_message_id" =. i ],
   httpMethod = "POST" }
 
 data Err = Err Text
@@ -176,11 +212,36 @@ getUpdates = do
 getMessages :: Telegram [Message]
 getMessages = map message <$> getUpdates
 
+data ParseMode = Normal | Markdown
+  deriving (Eq, Show)
+
+data SendMessageParams = SendMessageParams {
+  parseMode             :: ParseMode,
+  disableWebPagePreview :: Bool,
+  replyTo               :: Maybe Integer }
+
+instance Default SendMessageParams where
+  def = SendMessageParams {
+    parseMode             = Normal,
+    disableWebPagePreview = False,
+    replyTo               = Nothing }
+
 sendMessage :: Integer -> Text -> Telegram Message
-sendMessage chat_id text = result <$> runRoute (sendMessageRoute chat_id text)
+sendMessage chat_id text = sendMessage' chat_id text def
+
+sendMessage' :: Integer -> Text -> SendMessageParams -> Telegram Message
+sendMessage' chat_id text params =
+  result <$> runRoute (sendMessageRoute chat_id text params)
 
 respond :: Message -> Text -> Telegram Message
-respond msg text = sendMessage (chat_id (chat msg)) text
+respond msg text = respond' msg text def
+
+respond' :: Message -> Text -> SendMessageParams -> Telegram Message
+respond' msg text params = sendMessage' (chat_id (chat msg)) text params
+
+reply :: Message -> Text -> Telegram Message
+reply msg text = respond' msg text def{
+  replyTo = Just (message_id msg) }
 
 onUpdateLoop :: (Update -> Telegram a) -> Telegram ()
 onUpdateLoop handler = forever $ do

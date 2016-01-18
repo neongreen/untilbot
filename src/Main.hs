@@ -20,7 +20,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 -- Parsing
-import Text.Megaparsec
+import Text.Megaparsec hiding (Message)
 import Text.Megaparsec.Text
 import Text.Megaparsec.Lexer (integer)
 -- Concurrency and MVars
@@ -49,7 +49,7 @@ bot = do
   fork $ forever $ ignoreErrors $ do
     modifyMVar_ remindersVar $ \reminders -> do
       (fired, later) <- liftIO $ findDueReminders reminders
-      for_ fired $ \Reminder{..} -> sendMessage chatId msg
+      for_ fired $ \Reminder{..} -> reply originalMessage "reminding"
       return later
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
@@ -60,21 +60,19 @@ bot = do
       Just str -> void $ do
         case parseReminder str of
           Nothing -> respond message "couldn't parse what you said"
-          Just (seconds, msg) -> do
+          Just (seconds, _) -> do
             currentTime <- liftIO $ getCurrentTime
             let time = addUTCTime (fromIntegral seconds) currentTime
             schedule Reminder {
-              time   = time,
-              chatId = chat_id (chat message),
-              msg    = msg }
+              time            = time,
+              originalMessage = message }
             respond message ("scheduled at " <> T.pack (show time))
 
 -- Reminders
 
 data Reminder = Reminder {
-  time   :: UTCTime,
-  chatId :: Integer,
-  msg    :: Text }
+  time            :: UTCTime,
+  originalMessage :: Message }
 
 findDueReminders :: [Reminder] -> IO ([Reminder], [Reminder])
 findDueReminders rs = do

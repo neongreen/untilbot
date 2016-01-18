@@ -66,48 +66,47 @@ data TelegramState = TelegramState {
 type UserId = Integer
 
 data User = User {
-  user_id    :: UserId,
-  first_name :: Text,
-  last_name  :: Maybe Text,
-  username   :: Maybe Text }
+  userId    :: UserId,
+  firstName :: Text,
+  lastName  :: Maybe Text,
+  username  :: Maybe Text }
   deriving (Show, Eq)
 
 instance FromJSON User where
   parseJSON = withObject "user" $ \o -> do
-    user_id    <- o .: "id"
-    first_name <- o .: "first_name"
-    last_name  <- optional (o .: "last_name")
-    username   <- optional (o .: "username")
+    userId    <- o .: "id"
+    firstName <- o .: "first_name"
+    lastName  <- optional (o .: "last_name")
+    username  <- optional (o .: "username")
     return User{..}
 
 data Message = Message {
-  message_id :: Integer,
-  from       :: Maybe User,
-  chat       :: Chat,
-  text       :: Maybe Text }
+  messageId :: Integer,
+  from      :: Maybe User,
+  chat      :: Chat,
+  text      :: Maybe Text }
   deriving (Show, Eq)
 
 instance FromJSON Message where
   parseJSON = withObject "message" $ \o -> do
-    message_id <- o .: "message_id"
-    from       <- o .: "from"
-    chat       <- o .: "chat"
-    text       <- optional (o .: "text")
+    messageId <- o .: "message_id"
+    from      <- o .: "from"
+    chat      <- o .: "chat"
+    text      <- optional (o .: "text")
     return Message{..}
 
 data Chat = Chat {
-  chat_id :: Integer }   -- TODO: or can be String
+  chatId :: Integer }   -- TODO: or can be String
   deriving (Show, Eq)
 
 instance FromJSON Chat where
   parseJSON = withObject "chat" $ \o -> do
-    chat_id <- o .: "id"
+    chatId <- o .: "id"
     return Chat{..}
 
 data Update = Update {
-  update_id :: Integer,
-  -- TODO: actually Maybe Message
-  message   :: Message }
+  updateId :: Integer,
+  message  :: Message }  -- TODO: actually Maybe Message
   deriving (Show, Eq)
 
 data Updates = Updates {
@@ -116,8 +115,8 @@ data Updates = Updates {
 
 instance FromJSON Update where
   parseJSON = withObject "update" $ \o -> do
-    update_id <- o .: "update_id"
-    message   <- o .: "message"
+    updateId <- o .: "update_id"
+    message  <- o .: "message"
     return Update{..}
 
 instance FromJSON Updates where
@@ -168,10 +167,10 @@ getUpdatesRoute mbOffset = Route {
   httpMethod = "GET" }
 
 sendMessageRoute :: Integer -> Text -> SendMessageParams -> Route
-sendMessageRoute chat_id text SendMessageParams{..} = Route {
+sendMessageRoute chatId text SendMessageParams{..} = Route {
   urlPieces  = ["sendMessage"],
   urlParams  = [
-      "chat_id" =. chat_id,
+      "chat_id" =. chatId,
       "text"    =. text,
       case parseMode of
         Normal   -> []
@@ -207,7 +206,7 @@ getUpdates = do
   updates <- getUpdates_ mbOffset
   let maxId = case updates of
         [] -> Nothing
-        _  -> Just $ maximum (map update_id updates)
+        _  -> Just $ maximum (map updateId updates)
   liftState $ modify $ \s -> s {nextOffset = max (succ <$> maxId) mbOffset}
   return updates
 
@@ -230,21 +229,21 @@ instance Default SendMessageParams where
     replyTo               = Nothing }
 
 sendMessage :: Integer -> Text -> Telegram Message
-sendMessage chat_id text = sendMessage' chat_id text def
+sendMessage chatId text = sendMessage' chatId text def
 
 sendMessage' :: Integer -> Text -> SendMessageParams -> Telegram Message
-sendMessage' chat_id text params =
-  result <$> runRoute (sendMessageRoute chat_id text params)
+sendMessage' chatId text params =
+  result <$> runRoute (sendMessageRoute chatId text params)
 
 respond :: Message -> Text -> Telegram Message
 respond msg text = respond' msg text def
 
 respond' :: Message -> Text -> SendMessageParams -> Telegram Message
-respond' msg text params = sendMessage' (chat_id (chat msg)) text params
+respond' msg text params = sendMessage' (chatId (chat msg)) text params
 
 reply :: Message -> Text -> Telegram Message
 reply msg text = respond' msg text def{
-  replyTo = Just (message_id msg) }
+  replyTo = Just (messageId msg) }
 
 onUpdateLoop :: (Update -> Telegram a) -> Telegram ()
 onUpdateLoop handler = forever $ do

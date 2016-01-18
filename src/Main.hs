@@ -112,18 +112,18 @@ processMessage userDataVar message = void $ runMaybeT $ do
   -- nem. This makes 'scheduleGoal' and 'getActiveGoal' simpler, because they
   -- no longer have to care about missing entries.
   modifyMVar_ userDataVar $ \userData -> return $
-    if M.member (user_id user) userData
+    if M.member (userId user) userData
       then userData
-      else M.insert (user_id user) def userData
+      else M.insert (userId user) def userData
 
   let scheduleGoal :: Goal -> Telegram ()
       scheduleGoal goal = modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (user_id user) . activeGoal .~ Just goal
+        userData & ix (userId user) . activeGoal .~ Just goal
 
   let getActiveGoal :: Telegram (Maybe Goal)
       getActiveGoal = do
         userData <- readMVar userDataVar
-        return $ userData ^?! ix (user_id user) . activeGoal
+        return $ userData ^?! ix (userId user) . activeGoal
 
   lift $ case text of
     -- “?” means “query status”; show active goal to the user

@@ -2,6 +2,7 @@
 RecordWildCards,
 OverloadedStrings,
 MultiWayIf,
+TemplateHaskell,
 NoImplicitPrelude
   #-}
 
@@ -14,6 +15,11 @@ import BasePrelude hiding (
   threadDelay,
   catch,
   readMVar, takeMVar, newMVar, putMVar, modifyMVar_ )
+-- Lenses
+import Lens.Micro.GHC hiding ((&))
+import Lens.Micro.TH
+-- Default
+import Data.Default.Class
 -- Monad transformers
 import Control.Monad.Except
 import Control.Monad.Trans.Maybe
@@ -42,6 +48,22 @@ import Data.Time
 import Telegram
 
 
+data Goal = Goal {
+  goalEnd         :: UTCTime,
+  originalMessage :: Message,
+  goalText        :: Text }
+
+data UserData = UserData {
+  _activeGoal     :: Maybe Goal,
+  _completedGoals :: [Goal] }
+
+makeLenses ''UserData
+
+instance Default UserData where
+  def = UserData {
+    _activeGoal     = Nothing,
+    _completedGoals = [] }
+
 main :: IO ()
 main = void $ do
   botToken <- T.readFile "telegram-token"
@@ -49,23 +71,31 @@ main = void $ do
 
 bot :: Telegram ()
 bot = do
-  -- Create a variable holding all goals.
-  goalsVar <- newMVar mempty
-  -- Run the loop that checks all goals every second, sends messages
-  -- about ones that have ended, and leaves those that haven't ended yet.
+  -- Create a variable holding user data.
+  userDataVar <- newMVar mempty
+  -- Run the goal-checking loop.
   fork $ forever $ ignoreErrors $ do
-    modifyMVar_ goalsVar $ \goals -> do
-      (finished, inProgress) <- liftIO $ findFinishedGoals goals
-      for_ finished $ \Goal{..} ->
-        respond originalMessage (quote goalText)
-      return inProgress
+    checkGoals userDataVar
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
   onUpdateLoop $ \Update{..} ->
-    ignoreErrors $ ignoreExceptions $ processMessage goalsVar message
+    ignoreErrors $ ignoreExceptions $ processMessage userDataVar message
 
-processMessage :: MVar (Map UserId Goal) -> Message -> Telegram ()
-processMessage goalsVar message = void $ runMaybeT $ do
+-- Check every goal, send messages about ones that have ended, and leave
+-- those that haven't ended yet in the map.
+checkGoals :: MVar (Map UserId UserData) -> Telegram ()
+checkGoals userDataVar = modifyMVar_ userDataVar $ \userData -> do
+  currentTime <- liftIO getCurrentTime
+  forM userData $ \ud ->
+    case ud ^. activeGoal of
+      Just goal | goalEnd goal < currentTime -> do
+        respond (originalMessage goal) (quote (goalText goal))
+        return $ ud & activeGoal .~ Nothing
+                    & completedGoals %~ (goal:)
+      _other -> return ud
+
+processMessage :: MVar (Map UserId UserData) -> Message -> Telegram ()
+processMessage userDataVar message = void $ runMaybeT $ do
   -- Both user and message text have to be present (otherwise we don't do
   -- anything).
   -- 
@@ -76,12 +106,22 @@ processMessage goalsVar message = void $ runMaybeT $ do
   user <- liftMaybe (from message)
   text <- liftMaybe (text message)
 
+  -- If we haven't seen this user yet, create an empty UserData record for
+  -- nem. This makes 'schedule' and 'getActiveGoal' simpler, because they no
+  -- longer have to care about missing entries.
+  modifyMVar_ userDataVar $ \userData -> return $
+    if M.member (user_id user) userData
+      then userData
+      else M.insert (user_id user) def userData
+
   let schedule :: Goal -> Telegram ()
-      schedule goal = modifyMVar_ goalsVar $ \m ->
-        return (M.insert (user_id user) goal m)
+      schedule goal = modifyMVar_ userDataVar $ \userData -> return $
+        userData & ix (user_id user) . activeGoal .~ Just goal
 
   let getActiveGoal :: Telegram (Maybe Goal)
-      getActiveGoal = M.lookup (user_id user) <$> readMVar goalsVar
+      getActiveGoal = do
+        userData <- readMVar userDataVar
+        return $ userData ^?! ix (user_id user) . activeGoal
 
   lift $ case text of
     -- “?” means “query status”; show active goal to the user
@@ -106,19 +146,6 @@ processMessage goalsVar message = void $ runMaybeT $ do
 
     -- Otherwise, tell the user we couldn't parse the command
     _ -> void $ respond message "couldn't parse what you said"
-
--- Goals
-
-data Goal = Goal {
-  goalEnd         :: UTCTime,
-  originalMessage :: Message,
-  goalText        :: Text }
-
-findFinishedGoals :: Map UserId Goal
-                  -> IO (Map UserId Goal, Map UserId Goal)
-findFinishedGoals m = do
-  currentTime <- getCurrentTime
-  return (M.partition ((< currentTime) . goalEnd) m)
 
 showStatus :: Maybe Goal -> IO Text
 showStatus Nothing  = return "you're not doing anything"

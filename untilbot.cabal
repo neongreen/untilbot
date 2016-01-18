@@ -30,8 +30,10 @@ executable untilbot
                      , base-prelude >= 0.1.21 && < 0.2
                      , bytestring >= 0.10.6.0
                      , http-client >= 0.4.20
+                     , lifted-base >= 0.2.3
                      , mtl == 2.2.*
                      , text == 1.2.*
+                     , time >= 1.5.0.1
                      , transformers >= 0.4.2.0
   ghc-options:         -Wall -fno-warn-unused-do-bind
   hs-source-dirs:      src

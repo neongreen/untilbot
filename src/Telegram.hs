@@ -66,7 +66,7 @@ instance FromJSON Message where
     return Message{..}
 
 data Chat = Chat {
-  chat_id :: Integer }
+  chat_id :: Integer }   -- TODO: or can be String
   deriving (Show, Eq)
 
 instance FromJSON Chat where

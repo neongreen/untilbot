@@ -52,7 +52,9 @@ bot = do
   fork $ forever $ ignoreErrors $ do
     modifyMVar_ remindersVar $ \reminders -> do
       (fired, later) <- liftIO $ findDueReminders reminders
-      for_ fired $ \Reminder{..} -> reply originalMessage "reminding"
+      for_ fired $ \Reminder{..} -> do
+        let quoted = T.unlines . map ("> " <>) . T.lines $ reminderText
+        respond originalMessage quoted
       return later
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.

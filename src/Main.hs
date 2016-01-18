@@ -52,9 +52,8 @@ bot = do
   fork $ forever $ ignoreErrors $ do
     modifyMVar_ goalsVar $ \goals -> do
       (finished, inProgress) <- liftIO $ findFinishedGoals goals
-      for_ finished $ \Goal{..} -> do
-        let quoted = T.unlines . map ("> " <>) . T.lines $ goalText
-        respond originalMessage quoted
+      for_ finished $ \Goal{..} ->
+        respond originalMessage (quote goalText)
       return inProgress
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
@@ -105,11 +104,10 @@ findFinishedGoals xs = do
 showStatus :: [Goal] -> IO Text
 showStatus xs = do
   currentTime <- getCurrentTime
-  let showLeft x = let diff = diffUTCTime (goalEnd x) currentTime
-                   in  showDuration diff <> " left"
+  let showLeft x = showDuration (diffUTCTime (goalEnd x) currentTime)
   return $ case xs of
     []  -> "you're not doing anything"
-    [x] -> format "{} – {}" (goalText x, showLeft x)
+    [x] -> format "{}\n{} left" (quote (goalText x), showLeft x)
     _   -> "somehow you managed to be doing more than one goal at once, \
            \it's a bug"
 
@@ -171,3 +169,6 @@ showPlural n x
 -- | A wrapper around 'Format.format' that returns a strict Text.
 format :: Params ps => Format -> ps -> Text
 format f ps = TL.toStrict (Format.format f ps)
+
+quote :: Text -> Text
+quote = T.unlines . map ("> " <>) . T.lines

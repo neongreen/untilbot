@@ -52,10 +52,12 @@ data Goal = Goal {
   goalEnd         :: UTCTime,
   originalMessage :: Message,
   goalText        :: Text }
+  deriving (Show)
 
 data UserData = UserData {
   _activeGoal     :: Maybe Goal,
   _completedGoals :: [Goal] }
+  deriving (Show)
 
 makeLenses ''UserData
 

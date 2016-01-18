@@ -95,10 +95,11 @@ durationP :: Parser Integer
 durationP = do
   items <- some $ do
     n <- integer
+    let strings = choice . map string . words
     choice [
-      string "h" *> pure (n*3600),
-      string "m" *> pure (n*60),
-      string "s" *> pure n ]
+      strings "h hr  ч час" *> pure (n*3600),
+      strings "m min м мин" *> pure (n*60),
+      strings "s sec с сек" *> pure n ]
   return (sum items)
 
 -- Utils

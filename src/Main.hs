@@ -47,8 +47,6 @@ bot :: Telegram ()
 bot = do
   -- Create a variable holding all reminders.
   remindersVar <- newMVar []
-  let schedule :: Reminder -> Telegram ()
-      schedule r = modifyMVar_ remindersVar (return . (r:))
   -- Run the loop that checks all reminders every second, sends messages
   -- about ones that have fired, and leaves those that haven't fired yet.
   fork $ forever $ ignoreErrors $ do
@@ -58,41 +56,53 @@ bot = do
       return later
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
-  onUpdateLoop $ \Update{..} -> ignoreErrors $ ignoreExceptions $ do
-    case text message of
-      Nothing ->
-        return ()
-      Just "?" -> void $ do
-        reminders <- readMVar remindersVar
-        respond message =<< liftIO (showStatus reminders)
-      Just str -> do
-        case parseReminder str of
-          Nothing -> void $
-            respond message "couldn't parse what you said"
-          Just (seconds, reminderText) -> do
-            currentTime <- liftIO $ getCurrentTime
-            let time = addUTCTime (fromIntegral seconds) currentTime
-            schedule Reminder {
-              time            = time,
-              originalMessage = message,
-              reminderText    = reminderText }
+  onUpdateLoop $ \Update{..} ->
+    ignoreErrors $ ignoreExceptions $ processMessage remindersVar message
+
+processMessage :: MVar [Reminder] -> Message -> Telegram ()
+processMessage remindersVar message = do
+  let schedule :: Reminder -> Telegram ()
+      schedule r = modifyMVar_ remindersVar (\rs -> return (r:rs))
+
+  case text message of
+    -- A sound or a sticker or whatever instead of text; ignoring
+    Nothing -> return ()
+
+    -- “?” means “query status”; showing all active reminders to the user
+    Just "?" -> void $ do
+      reminders <- readMVar remindersVar
+      status <- liftIO $ showStatus reminders
+      respond message status
+
+    -- If it's a valid reminder that can be parsed, schedule it
+    Just str | Just (seconds, reminderText) <- parseReminder str -> do
+      currentTime <- liftIO $ getCurrentTime
+      let reminderTime = addUTCTime (fromIntegral seconds) currentTime
+      schedule Reminder {
+        reminderTime    = reminderTime,
+        originalMessage = message,
+        reminderText    = reminderText }
+
+    -- Otherwise, tell the user we couldn't parse the command
+    _ -> void $ respond message "couldn't parse what you said"
 
 -- Reminders
 
 data Reminder = Reminder {
-  time            :: UTCTime,
+  reminderTime    :: UTCTime,
   originalMessage :: Message,
   reminderText    :: Text }
 
 findDueReminders :: [Reminder] -> IO ([Reminder], [Reminder])
 findDueReminders rs = do
   currentTime <- getCurrentTime
-  return (partition ((< currentTime) . time) rs)
+  return (partition ((< currentTime) . reminderTime) rs)
 
 showStatus :: [Reminder] -> IO Text
 showStatus rs = do
   currentTime <- getCurrentTime
-  let showLeft r = showDuration (diffUTCTime (time r) currentTime) <> " left"
+  let showLeft r = let diff = diffUTCTime (reminderTime r) currentTime
+                   in  showDuration diff <> " left"
   return $ case rs of
     []  -> "you're not doing anything"
     [r] -> format "{} – {}" (reminderText r, showLeft r)

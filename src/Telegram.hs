@@ -141,7 +141,7 @@ sendMessageRoute :: Integer -> Text -> Route
 sendMessageRoute chat_id text = Route {
   urlPieces  = ["sendMessage"],
   urlParams  = ["chat_id" =. chat_id, "text" =. text],
-  httpMethod = "GET" }
+  httpMethod = "POST" }
 
 data Err = Err Text
   deriving Show

@@ -80,22 +80,29 @@ processMessage goalsVar message = void $ runMaybeT $ do
       schedule goal = modifyMVar_ goalsVar $ \m ->
         return (M.insert (user_id user) goal m)
 
+  let getActiveGoal :: Telegram (Maybe Goal)
+      getActiveGoal = M.lookup (user_id user) <$> readMVar goalsVar
+
   lift $ case text of
     -- “?” means “query status”; show active goal to the user
     "?" -> void $ do
-      goals <- readMVar goalsVar
-      let mbGoal = M.lookup (user_id user) goals
-      status <- liftIO $ showStatus mbGoal
+      mbActiveGoal <- getActiveGoal
+      status <- liftIO $ showStatus mbActiveGoal
       respond message status
 
-    -- If the message a valid goal that can be parsed, schedule it
+    -- If the message a valid goal that can be parsed, either schedule it or
+    -- say that the user already has an active goal.
     _ | Just (seconds, goalText) <- parseGoal text -> do
-      currentTime <- liftIO $ getCurrentTime
-      let endTime = addUTCTime (fromIntegral seconds) currentTime
-      schedule Goal {
-        goalEnd         = endTime,
-        originalMessage = message,
-        goalText        = goalText }
+      mbActiveGoal <- getActiveGoal
+      case mbActiveGoal of
+        Just _  -> void $ respond message "you already are doing something"
+        Nothing -> do
+          currentTime <- liftIO $ getCurrentTime
+          let endTime = addUTCTime (fromIntegral seconds) currentTime
+          schedule Goal {
+            goalEnd         = endTime,
+            originalMessage = message,
+            goalText        = goalText }
 
     -- Otherwise, tell the user we couldn't parse the command
     _ -> void $ respond message "couldn't parse what you said"

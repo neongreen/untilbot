@@ -45,80 +45,81 @@ main = void $ do
 
 bot :: Telegram ()
 bot = do
-  -- Create a variable holding all reminders.
-  remindersVar <- newMVar []
-  -- Run the loop that checks all reminders every second, sends messages
-  -- about ones that have fired, and leaves those that haven't fired yet.
+  -- Create a variable holding all goals.
+  goalsVar <- newMVar []
+  -- Run the loop that checks all goals every second, sends messages
+  -- about ones that have ended, and leaves those that haven't ended yet.
   fork $ forever $ ignoreErrors $ do
-    modifyMVar_ remindersVar $ \reminders -> do
-      (fired, later) <- liftIO $ findDueReminders reminders
-      for_ fired $ \Reminder{..} -> do
-        let quoted = T.unlines . map ("> " <>) . T.lines $ reminderText
+    modifyMVar_ goalsVar $ \goals -> do
+      (finished, inProgress) <- liftIO $ findFinishedGoals goals
+      for_ finished $ \Goal{..} -> do
+        let quoted = T.unlines . map ("> " <>) . T.lines $ goalText
         respond originalMessage quoted
-      return later
+      return inProgress
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
   onUpdateLoop $ \Update{..} ->
-    ignoreErrors $ ignoreExceptions $ processMessage remindersVar message
+    ignoreErrors $ ignoreExceptions $ processMessage goalsVar message
 
-processMessage :: MVar [Reminder] -> Message -> Telegram ()
-processMessage remindersVar message = do
-  let schedule :: Reminder -> Telegram ()
-      schedule r = modifyMVar_ remindersVar (\rs -> return (r:rs))
+processMessage :: MVar [Goal] -> Message -> Telegram ()
+processMessage goalsVar message = do
+  let schedule :: Goal -> Telegram ()
+      schedule x = modifyMVar_ goalsVar (\xs -> return (x:xs))
 
   case text message of
     -- A sound or a sticker or whatever instead of text; ignoring
     Nothing -> return ()
 
-    -- “?” means “query status”; showing all active reminders to the user
+    -- “?” means “query status”; show active goal to the user
     Just "?" -> void $ do
-      reminders <- readMVar remindersVar
-      status <- liftIO $ showStatus reminders
+      goals <- readMVar goalsVar
+      let thisChat = chat_id (chat message)
+          goalChat = chat_id . chat . originalMessage
+      status <- liftIO $ showStatus (filter ((== thisChat) . goalChat) goals)
       respond message status
 
-    -- If it's a valid reminder that can be parsed, schedule it
-    Just str | Just (seconds, reminderText) <- parseReminder str -> do
+    -- If it's a valid goal that can be parsed, schedule it
+    Just str | Just (seconds, goalText) <- parseGoal str -> do
       currentTime <- liftIO $ getCurrentTime
-      let reminderTime = addUTCTime (fromIntegral seconds) currentTime
-      schedule Reminder {
-        reminderTime    = reminderTime,
+      let endTime = addUTCTime (fromIntegral seconds) currentTime
+      schedule Goal {
+        goalEnd         = endTime,
         originalMessage = message,
-        reminderText    = reminderText }
+        goalText        = goalText }
 
     -- Otherwise, tell the user we couldn't parse the command
     _ -> void $ respond message "couldn't parse what you said"
 
--- Reminders
+-- Goals
 
-data Reminder = Reminder {
-  reminderTime    :: UTCTime,
+data Goal = Goal {
+  goalEnd         :: UTCTime,
   originalMessage :: Message,
-  reminderText    :: Text }
+  goalText        :: Text }
 
-findDueReminders :: [Reminder] -> IO ([Reminder], [Reminder])
-findDueReminders rs = do
+findFinishedGoals :: [Goal] -> IO ([Goal], [Goal])
+findFinishedGoals xs = do
   currentTime <- getCurrentTime
-  return (partition ((< currentTime) . reminderTime) rs)
+  return (partition ((< currentTime) . goalEnd) xs)
 
-showStatus :: [Reminder] -> IO Text
-showStatus rs = do
+showStatus :: [Goal] -> IO Text
+showStatus xs = do
   currentTime <- getCurrentTime
-  let showLeft r = let diff = diffUTCTime (reminderTime r) currentTime
+  let showLeft x = let diff = diffUTCTime (goalEnd x) currentTime
                    in  showDuration diff <> " left"
-  return $ case rs of
+  return $ case xs of
     []  -> "you're not doing anything"
-    [r] -> format "{} – {}" (reminderText r, showLeft r)
-    _   -> T.unlines $ do
-             (i, r) <- zip [1 :: Int ..] rs
-             return (format "{}. {} – {}" (i, reminderText r, showLeft r))
+    [x] -> format "{} – {}" (goalText x, showLeft x)
+    _   -> "somehow you managed to be doing more than one goal at once, \
+           \it's a bug"
 
 -- Parsing
 
-parseReminder :: Text -> Maybe (Integer, Text)
-parseReminder = parseMaybe reminderP
+parseGoal :: Text -> Maybe (Integer, Text)
+parseGoal = parseMaybe goalP
 
-reminderP :: Parser (Integer, Text)
-reminderP = do
+goalP :: Parser (Integer, Text)
+goalP = do
   duration <- durationP
   skipSome spaceChar
   rest <- many anyChar

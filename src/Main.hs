@@ -109,15 +109,15 @@ processMessage userDataVar message = void $ runMaybeT $ do
   text <- liftMaybe (text message)
 
   -- If we haven't seen this user yet, create an empty UserData record for
-  -- nem. This makes 'schedule' and 'getActiveGoal' simpler, because they no
-  -- longer have to care about missing entries.
+  -- nem. This makes 'scheduleGoal' and 'getActiveGoal' simpler, because they
+  -- no longer have to care about missing entries.
   modifyMVar_ userDataVar $ \userData -> return $
     if M.member (user_id user) userData
       then userData
       else M.insert (user_id user) def userData
 
-  let schedule :: Goal -> Telegram ()
-      schedule goal = modifyMVar_ userDataVar $ \userData -> return $
+  let scheduleGoal :: Goal -> Telegram ()
+      scheduleGoal goal = modifyMVar_ userDataVar $ \userData -> return $
         userData & ix (user_id user) . activeGoal .~ Just goal
 
   let getActiveGoal :: Telegram (Maybe Goal)
@@ -133,7 +133,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
       respond message status
 
     -- If the message a valid goal that can be parsed, either schedule it or
-    -- say that the user already has an active goal.
+    -- say that the user already has an active goal
     _ | Just (seconds, goalText) <- parseGoal text -> do
       mbActiveGoal <- getActiveGoal
       case mbActiveGoal of
@@ -141,7 +141,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
         Nothing -> do
           currentTime <- liftIO $ getCurrentTime
           let endTime = addUTCTime (fromIntegral seconds) currentTime
-          schedule Goal {
+          scheduleGoal Goal {
             goalEnd         = endTime,
             originalMessage = message,
             goalText        = goalText }

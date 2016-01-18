@@ -65,9 +65,10 @@ bot = do
       Just "?" -> void $ do
         reminders <- readMVar remindersVar
         respond message =<< liftIO (showStatus reminders)
-      Just str -> void $ do
+      Just str -> do
         case parseReminder str of
-          Nothing -> respond message "couldn't parse what you said"
+          Nothing -> void $
+            respond message "couldn't parse what you said"
           Just (seconds, reminderText) -> do
             currentTime <- liftIO $ getCurrentTime
             let time = addUTCTime (fromIntegral seconds) currentTime
@@ -75,7 +76,6 @@ bot = do
               time            = time,
               originalMessage = message,
               reminderText    = reminderText }
-            respond message (format "scheduled at {}" [time])
 
 -- Reminders
 

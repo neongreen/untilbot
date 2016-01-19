@@ -50,6 +50,7 @@ import Telegram
 
 data Goal = Goal {
   goalEnd         :: UTCTime,
+  goalLength      :: NominalDiffTime,
   originalMessage :: Message,
   goalText        :: Text }
   deriving (Show)
@@ -57,7 +58,10 @@ data Goal = Goal {
 data Status = Resting | Doing Goal | Judging Goal
   deriving (Show)
 
-data GoalResult = CompletedEarly NominalDiffTime | Completed | Failed
+data GoalResult
+  = CompletedEarly NominalDiffTime
+  | Completed
+  | Failed
   deriving (Show)
 
 data UserData = UserData {
@@ -89,8 +93,7 @@ bot = do
   onUpdateLoop $ \Update{..} ->
     ignoreErrors $ ignoreExceptions $ processMessage userDataVar message
 
--- Check every goal, send messages about ones that have ended, and leave
--- those that haven't ended yet in the map.
+-- Check every goal and send messages about ones that have ended.
 checkGoals :: MVar (Map UserId UserData) -> Telegram ()
 checkGoals userDataVar = modifyMVar_ userDataVar $ \userData -> do
   currentTime <- liftIO getCurrentTime
@@ -130,9 +133,8 @@ processMessage userDataVar message = void $ runMaybeT $ do
         userData & ix (userId user) . userStatus .~ Resting
                  & ix (userId user) . archivedGoals %~ ((goal, res) :)
 
-  status <- do
-    userData <- readMVar userDataVar
-    return $ userData ^?! ix (userId user) . userStatus
+  thisUserData <- (M.! userId user) <$> readMVar userDataVar
+  let status = thisUserData ^. userStatus
 
   lift $ case text of
     -- “?” means “query status”
@@ -145,12 +147,12 @@ processMessage userDataVar message = void $ runMaybeT $ do
         respond_ message "but you weren't doing anything"
       Doing goal -> do
         let leftTime = diffUTCTime (goalEnd goal) (date message)
-        if leftTime > 0 then do
-          respond_ message $ format "okay, you finished {} early"
-                                    [showDuration leftTime]
-          archiveGoal goal (CompletedEarly leftTime)
-        else do
-          archiveGoal goal Completed
+        if leftTime <= 0
+          then archiveGoal goal Completed
+          else do
+            respond_ message $ format "okay, you finished {} early"
+                                      [showDuration leftTime]
+            archiveGoal goal (CompletedEarly leftTime)
       Judging goal ->
         archiveGoal goal Completed
 
@@ -162,6 +164,25 @@ processMessage userDataVar message = void $ runMaybeT $ do
         archiveGoal goal Failed
       Judging goal ->
         archiveGoal goal Failed
+
+    "again" -> case status of
+      Doing _ ->
+        respond_ message "you haven't finished the previous goal"
+      Judging _ ->
+        respond_ message "you still haven't said anything about \
+                         \the previous goal"
+      Resting ->
+        case thisUserData ^? archivedGoals . _head of
+          Nothing ->
+            respond_ message "can't do anything “again” since you \
+                             \haven't ever scheduled any goals"
+          Just (goal, _) -> do
+            respond_ message $ quote (goalText goal) <>
+                               blankline <>
+                               "repeating this"
+            currentTime <- liftIO $ getCurrentTime
+            scheduleGoal goal {
+              goalEnd = addUTCTime (goalLength goal) currentTime }
 
     -- If the message a valid goal that can be parsed, either schedule it or
     -- say that the user already has an active/judged goal
@@ -175,6 +196,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
           let endTime = addUTCTime (fromIntegral seconds) currentTime
           scheduleGoal Goal {
             goalEnd         = endTime,
+            goalLength      = fromInteger seconds,
             originalMessage = message,
             goalText        = goalText }
 
@@ -186,10 +208,13 @@ showStatus Resting = return "you're not doing anything"
 showStatus (Doing x) = do
   currentTime <- getCurrentTime
   let leftTime = diffUTCTime (goalEnd x) currentTime
-  return $ format "{}\n{} left" (quote (goalText x), showDuration leftTime)
+  return $ quote (goalText x) <>
+           blankline <>
+           (showDuration leftTime <> " left")
 showStatus (Judging x) =
-  return $ format "{}\nwaiting for you to say something about this"
-                  [quote (goalText x)]
+  return $ quote (goalText x) <>
+           blankline <>
+           "waiting for you to say something about this"
 
 -- Parsing
 
@@ -252,6 +277,9 @@ format f ps = TL.toStrict (Format.format f ps)
 
 quote :: Text -> Text
 quote = T.unlines . map ("> " <>) . T.lines
+
+blankline :: Text
+blankline = "\n"
 
 liftMaybe :: Monad m => Maybe a -> MaybeT m a
 liftMaybe = MaybeT . return

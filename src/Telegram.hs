@@ -27,7 +27,7 @@ module Telegram
   getMessages,
   SendMessageParams(..),
   sendMessage, sendMessage',
-  respond, respond',
+  respond, respond_, respond', respond'_,
   reply,
   onUpdateLoop,
 )
@@ -238,8 +238,14 @@ sendMessage' chatId text params =
 respond :: Message -> Text -> Telegram Message
 respond msg text = respond' msg text def
 
+respond_ :: Message -> Text -> Telegram ()
+respond_ msg text = void $ respond msg text
+
 respond' :: Message -> Text -> SendMessageParams -> Telegram Message
 respond' msg text params = sendMessage' (chatId (chat msg)) text params
+
+respond'_ :: Message -> Text -> SendMessageParams -> Telegram ()
+respond'_ msg text params = void $ respond' msg text params
 
 reply :: Message -> Text -> Telegram Message
 reply msg text = respond' msg text def{

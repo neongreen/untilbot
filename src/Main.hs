@@ -117,24 +117,30 @@ processMessage userDataVar message = void $ runMaybeT $ do
   text <- liftMaybe (text message)
 
   -- If we haven't seen this user yet, create an empty UserData record for
-  -- nem. This makes 'scheduleGoal', 'archiveGoal', and getting status
-  -- simpler, because we no longer have to care about missing entries.
+  -- nem. This makes 'setGoal', 'archiveGoal', and getting status simpler,
+  -- because we no longer have to care about missing entries.
   modifyMVar_ userDataVar $ \userData -> return $
     if M.member (userId user) userData
       then userData
       else M.insert (userId user) def userData
 
-  let scheduleGoal :: Goal -> Telegram ()
-      scheduleGoal goal = modifyMVar_ userDataVar $ \userData -> return $
+  thisUserData <- (M.! userId user) <$> readMVar userDataVar
+  let status = thisUserData ^. userStatus
+
+  currentTime <- liftIO $ getCurrentTime
+
+  let setGoal :: Goal -> Telegram ()
+      setGoal goal = modifyMVar_ userDataVar $ \userData -> return $
         userData & ix (userId user) . userStatus .~ Doing goal
+
+  let startFromNow :: Goal -> Goal
+      startFromNow goal = goal {
+        goalEnd = addUTCTime (goalLength goal) currentTime }
 
   let archiveGoal :: Goal -> GoalResult -> Telegram ()
       archiveGoal goal res = modifyMVar_ userDataVar $ \userData -> return $
         userData & ix (userId user) . userStatus .~ Resting
                  & ix (userId user) . archivedGoals %~ ((goal, res) :)
-
-  thisUserData <- (M.! userId user) <$> readMVar userDataVar
-  let status = thisUserData ^. userStatus
 
   lift $ case text of
     -- “?” means “query status”
@@ -170,7 +176,8 @@ processMessage userDataVar message = void $ runMaybeT $ do
         respond_ message "you haven't finished the previous goal"
       Judging _ ->
         respond_ message "you still haven't said anything about \
-                         \the previous goal"
+                         \the goal you want to repeat; say “done, again” \
+                         \or “fail, again”"
       Resting ->
         case thisUserData ^? archivedGoals . _head of
           Nothing ->
@@ -180,23 +187,55 @@ processMessage userDataVar message = void $ runMaybeT $ do
             respond_ message $ quote (goalText goal) <>
                                blankline <>
                                "repeating this"
-            currentTime <- liftIO $ getCurrentTime
-            scheduleGoal goal {
-              goalEnd = addUTCTime (goalLength goal) currentTime }
+            setGoal (startFromNow goal)
+
+    "done, again" -> case status of
+      Resting ->
+        respond_ message "but you weren't doing anything"
+      Doing goal -> do
+        let leftTime = diffUTCTime (goalEnd goal) (date message)
+        if leftTime <= 0
+          then archiveGoal goal Completed
+          else do
+            respond_ message $ format "okay, you finished {} early"
+                                      [showDuration leftTime]
+            archiveGoal goal (CompletedEarly leftTime)
+        setGoal (startFromNow goal)
+      Judging goal -> do
+        archiveGoal goal Completed
+        setGoal (startFromNow goal)
+
+    "fail, again" -> case status of
+      Resting ->
+        respond_ message "but you weren't doing anything"
+      Doing _ ->
+        respond_ message "ignored (use reset instead)"
+      Judging goal -> do
+        archiveGoal goal Failed
+        setGoal (startFromNow goal)
+
+    "reset" -> case status of
+      Resting ->
+        respond_ message "but you weren't doing anything"
+      Doing goal -> do
+        respond_ message "okay"
+        setGoal (startFromNow goal)
+      Judging goal ->
+        setGoal (startFromNow goal)
+
+    "help" -> respond_ message helpText
 
     -- If the message a valid goal that can be parsed, either schedule it or
     -- say that the user already has an active/judged goal
-    _ | Just (seconds, goalText) <- parseGoal text ->
+    _ | Just (duration, goalText) <- parseGoal text ->
       case status of
         Doing   _ -> respond_ message "you already are doing something"
         Judging _ -> respond_ message "you still haven't said anything about \
                                       \the previous goal"
-        Resting -> do
-          currentTime <- liftIO $ getCurrentTime
-          let endTime = addUTCTime (fromIntegral seconds) currentTime
-          scheduleGoal Goal {
-            goalEnd         = endTime,
-            goalLength      = fromInteger seconds,
+        Resting ->
+          setGoal Goal {
+            goalEnd         = addUTCTime duration currentTime,
+            goalLength      = duration,
             originalMessage = message,
             goalText        = goalText }
 
@@ -216,19 +255,42 @@ showStatus (Judging x) =
            blankline <>
            "waiting for you to say something about this"
 
+helpText :: Text
+helpText = T.unlines [
+  "write something like “10m wash dishes” to set a goal, and in 10 minutes\
+  \you'll be notified about it; then you can say:",
+  "",
+  "  • “done” if you have done it",
+  "  • “fail” if you haven't",
+  "  • “reset” if you forgot about the goal and want to restart it",
+  "",
+  "you can also say “done” and “reset” while the goal is in progress",
+  "",
+  "“fail, again” and “done, again” are useful when you want to repeat a goal \
+  \that just finished; you can also say “again” to repeat the last goal no \
+  \matter how long ago it was",
+  "",
+  "——————————",
+  "",
+  "to find out what you're supposed to be doing now, say “?”",
+  "",
+  "——————————",
+  "",
+  "to specify time you can also use stuff like “1h45m”, “3m30s”, and “1ч20м”" ]
+
 -- Parsing
 
-parseGoal :: Text -> Maybe (Integer, Text)
+parseGoal :: Text -> Maybe (NominalDiffTime, Text)
 parseGoal = parseMaybe goalP
 
-goalP :: Parser (Integer, Text)
+goalP :: Parser (NominalDiffTime, Text)
 goalP = do
   duration <- durationP
   skipSome spaceChar
   rest <- many anyChar
   return (duration, T.pack rest)
 
-durationP :: Parser Integer
+durationP :: Parser NominalDiffTime
 durationP = do
   items <- some $ do
     n <- integer
@@ -237,7 +299,7 @@ durationP = do
       strings "h hr hrs ч час" *> pure (n*3600),
       strings "m min    м мин" *> pure (n*60),
       strings "s sec    с сек" *> pure n ]
-  return (sum items)
+  return (fromInteger (sum items))
 
 -- Utils
 

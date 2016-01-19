@@ -119,10 +119,13 @@ processMessage userDataVar message = void $ runMaybeT $ do
   -- If we haven't seen this user yet, create an empty UserData record for
   -- nem. This makes 'setGoal', 'archiveGoal', and getting status simpler,
   -- because we no longer have to care about missing entries.
-  modifyMVar_ userDataVar $ \userData -> return $
-    if M.member (userId user) userData
-      then userData
-      else M.insert (userId user) def userData
+  -- 
+  -- Also print help (because it's a new user).
+  newUser <- M.member (userId user) <$> readMVar userDataVar
+  when newUser $ do
+    lift $ respond_ message helpText
+    modifyMVar_ userDataVar $ \userData -> return $
+      M.insert (userId user) def userData
 
   thisUserData <- (M.! userId user) <$> readMVar userDataVar
   let status = thisUserData ^. userStatus

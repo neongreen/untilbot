@@ -57,7 +57,7 @@ data Goal = Goal {
 data Status = Resting | Doing Goal | Judging Goal
   deriving (Show)
 
-data GoalResult = Completed | Failed
+data GoalResult = CompletedEarly NominalDiffTime | Completed | Failed
   deriving (Show)
 
 data UserData = UserData {
@@ -143,16 +143,22 @@ processMessage userDataVar message = void $ runMaybeT $ do
     "done" -> case status of
       Resting ->
         respond_ message "but you weren't doing anything"
-      Doing goal ->
-        -- TODO: say something like “you finished X minutes early, nice”
-        archiveGoal goal Completed
+      Doing goal -> do
+        let leftTime = diffUTCTime (goalEnd goal) (date message)
+        if leftTime > 0 then do
+          respond_ message $ format "okay, you finished {} early"
+                                    [showDuration leftTime]
+          archiveGoal goal (CompletedEarly leftTime)
+        else do
+          archiveGoal goal Completed
       Judging goal ->
         archiveGoal goal Completed
 
     "fail" -> case status of
       Resting ->
         respond_ message "but you weren't doing anything"
-      Doing goal ->
+      Doing goal -> do
+        respond_ message "okay"
         archiveGoal goal Failed
       Judging goal ->
         archiveGoal goal Failed
@@ -179,8 +185,8 @@ showStatus :: Status -> IO Text
 showStatus Resting = return "you're not doing anything"
 showStatus (Doing x) = do
   currentTime <- getCurrentTime
-  let leftTime = showDuration (diffUTCTime (goalEnd x) currentTime)
-  return $ format "{}\n{} left" (quote (goalText x), leftTime)
+  let leftTime = diffUTCTime (goalEnd x) currentTime
+  return $ format "{}\n{} left" (quote (goalText x), showDuration leftTime)
 showStatus (Judging x) =
   return $ format "{}\nwaiting for you to say something about this"
                   [quote (goalText x)]

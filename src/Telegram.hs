@@ -46,6 +46,9 @@ import qualified Data.ByteString.Char8 as B8
 import Data.Aeson as Aeson
 -- Default
 import Data.Default.Class
+-- Time
+import Data.Time
+import Data.Time.Clock.POSIX
 -- interaction with Telegram API
 import Network.API.Builder
 import Network.HTTP.Client
@@ -83,6 +86,7 @@ instance FromJSON User where
 data Message = Message {
   messageId :: Integer,
   from      :: Maybe User,
+  date      :: UTCTime,
   chat      :: Chat,
   text      :: Maybe Text }
   deriving (Show, Eq)
@@ -91,6 +95,7 @@ instance FromJSON Message where
   parseJSON = withObject "message" $ \o -> do
     messageId <- o .: "message_id"
     from      <- o .: "from"
+    date      <- posixSecondsToUTCTime . fromInteger <$> o .: "date"
     chat      <- o .: "chat"
     text      <- optional (o .: "text")
     return Message{..}

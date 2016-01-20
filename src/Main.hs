@@ -42,7 +42,7 @@ import Text.Megaparsec.Lexer (integer)
 -- acid-state
 import Data.Acid as Acid
 import Data.SafeCopy
--- Concurrency and MVars
+-- Concurrency
 import Control.Concurrent.Lifted
 -- Exceptions
 import Control.Exception.Lifted
@@ -352,8 +352,7 @@ showStatus (Judging x) =
 
 helpText :: Text
 helpText = T.unlines [
-  "write something like “10m wash dishes” to set a goal, and in 10 minutes \
-  \you'll be notified about it; then you can say:",
+  "write something like “10m wash dishes” to set a goal, and in 10 minutes you'll be notified about it; then you can say:",
   "",
   "  • “done” if you have done it",
   "  • “fail” if you haven't",
@@ -361,9 +360,7 @@ helpText = T.unlines [
   "",
   "you can also say “done” and “reset” while the goal is in progress",
   "",
-  "“fail, again” and “done, again” are useful when you want to repeat a goal \
-  \that just finished; you can also say “again” to repeat the last goal no \
-  \matter how long ago it was",
+  "“fail, again” and “done, again” are useful when you want to repeat a goal that just finished; you can also say “again” to repeat the last goal no matter how long ago it was",
   "",
   "——————————",
   "",
@@ -371,13 +368,11 @@ helpText = T.unlines [
   "",
   "——————————",
   "",
-  "to specify time you can also use stuff like “1h45m”, “3m30s”, and “1ч20м”",
+  "to specify time you can use stuff like “1h45m”, “3m30s”, etc. Russian abbreviations (‘ч’, ‘м’, ‘с’) are supported too",
   "",
   "——————————",
   "",
-  "in order for stats to work correctly, say what time it is now (“now is \
-  \HH.MM”) and say when your day ends (“end of day at HH.MM”; if you don't \
-  \do this we're going to assume 6am)"
+  "you can say “stats” to see what you've done today; in order for stats to work correctly, say what time it is now (“now is HH.MM”) and say when your day ends (“end of day at HH.MM”; the default is 6am)"
   ]
 
 -- Stats
@@ -439,6 +434,7 @@ parseGoal = parseMaybe $ do
   rest <- many anyChar
   return (duration, T.pack rest)
 
+-- TODO: support fractions
 durationP :: Parser NominalDiffTime
 durationP = do
   items <- some $ do

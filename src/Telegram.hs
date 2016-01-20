@@ -1,6 +1,7 @@
 {-# LANGUAGE
 OverloadedStrings,
 RecordWildCards,
+TemplateHaskell,
 NoImplicitPrelude
   #-}
 
@@ -40,6 +41,7 @@ import BasePrelude
 import Control.Monad.State
 -- Text
 import Data.Text (Text)
+import qualified Data.Text as T
 -- ByteString
 import qualified Data.ByteString.Char8 as B8
 -- JSON
@@ -49,12 +51,30 @@ import Data.Default.Class
 -- Time
 import Data.Time
 import Data.Time.Clock.POSIX
+-- safecopy
+import Data.SafeCopy
 -- interaction with Telegram API
 import Network.API.Builder
 import Network.HTTP.Client
 
 
 type Token = Text
+
+type UserId = Integer
+
+data ChatId = ChatId Integer | ChannelId Text
+  deriving (Eq, Show)
+
+instance FromJSON ChatId where
+  parseJSON x = asum [
+    ChatId    <$> parseJSON x,
+    ChannelId <$> parseJSON x ]
+
+deriveSafeCopy 1 'base ''ChatId
+
+type MessageId = Integer
+
+type UpdateId = Integer
 
 type Telegram a = API TelegramState Err a
 
@@ -64,12 +84,7 @@ runTelegram token = execAPI (telegram token) TelegramState {
   nextOffset = Nothing }
 
 data TelegramState = TelegramState {
-  nextOffset :: Maybe Integer }
-
-type UserId    = Integer
-type ChatId    = Integer      -- TODO: or can be Text
-type MessageId = Integer
-type UpdateId  = Integer
+  nextOffset :: Maybe UpdateId }
 
 data User = User {
   userId    :: UserId,
@@ -113,7 +128,7 @@ instance FromJSON Chat where
     return Chat{..}
 
 data Update = Update {
-  updateId :: Integer,
+  updateId :: UpdateId,
   message  :: Message }  -- TODO: actually Maybe Message
   deriving (Show, Eq)
 
@@ -168,25 +183,25 @@ getMeRoute = Route {
   urlParams  = [],
   httpMethod = "GET" }
 
-getUpdatesRoute :: Maybe Integer -> Route
+getUpdatesRoute :: Maybe UpdateId -> Route
 getUpdatesRoute mbOffset = Route {
   urlPieces  = ["getUpdates"],
-  urlParams  = [case mbOffset of Nothing -> []; Just x -> "offset" =. x],
+  urlParams  = ["offset" =. mbOffset],
   httpMethod = "GET" }
 
-sendMessageRoute :: Integer -> Text -> SendMessageParams -> Route
+sendMessageRoute :: ChatId -> Text -> SendMessageParams -> Route
 sendMessageRoute chatId text SendMessageParams{..} = Route {
   urlPieces  = ["sendMessage"],
   urlParams  = [
-      "chat_id" =. chatId,
-      "text"    =. text,
-      case parseMode of
-        Normal   -> []
-        Markdown -> "parse_mode" =. ("Markdown" :: Text),
+      "chat_id" =. case chatId of
+                     ChatId    x -> T.pack (show x)
+                     ChannelId x -> x,
+      "text" =. text,
+      "parse_mode" =. case parseMode of
+                        Normal   -> Nothing
+                        Markdown -> Just ("Markdown" :: Text),
       "disable_web_page_preview" =. disableWebPagePreview,
-      case replyTo of
-        Nothing -> []
-        Just i  -> "reply_to_message_id" =. i ],
+      "reply_to_message_id"      =. replyTo ],
   httpMethod = "POST" }
 
 data Err = Err Text
@@ -205,7 +220,7 @@ instance ErrorReceivable Err where
 getMe :: Telegram User
 getMe = result <$> runRoute getMeRoute
 
-getUpdates_ :: Maybe Integer -> Telegram [Update]
+getUpdates_ :: Maybe UpdateId -> Telegram [Update]
 getUpdates_ mbOffset = updates . result <$> runRoute (getUpdatesRoute mbOffset)
 
 getUpdates :: Telegram [Update]
@@ -228,7 +243,7 @@ data ParseMode = Normal | Markdown
 data SendMessageParams = SendMessageParams {
   parseMode             :: ParseMode,
   disableWebPagePreview :: Bool,
-  replyTo               :: Maybe Integer }
+  replyTo               :: Maybe MessageId }
 
 instance Default SendMessageParams where
   def = SendMessageParams {
@@ -236,17 +251,17 @@ instance Default SendMessageParams where
     disableWebPagePreview = False,
     replyTo               = Nothing }
 
-sendMessage :: Integer -> Text -> Telegram Message
+sendMessage :: ChatId -> Text -> Telegram Message
 sendMessage chatId text = sendMessage' chatId text def
 
-sendMessage_ :: Integer -> Text -> Telegram ()
+sendMessage_ :: ChatId -> Text -> Telegram ()
 sendMessage_ chatId text = void $ sendMessage chatId text
 
-sendMessage' :: Integer -> Text -> SendMessageParams -> Telegram Message
+sendMessage' :: ChatId -> Text -> SendMessageParams -> Telegram Message
 sendMessage' chatId text params =
   result <$> runRoute (sendMessageRoute chatId text params)
 
-sendMessage'_ :: Integer -> Text -> SendMessageParams -> Telegram ()
+sendMessage'_ :: ChatId -> Text -> SendMessageParams -> Telegram ()
 sendMessage'_ chatId text params = void $ sendMessage' chatId text params
 
 respond :: Message -> Text -> Telegram Message

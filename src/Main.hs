@@ -3,6 +3,7 @@ RecordWildCards,
 OverloadedStrings,
 MultiWayIf,
 TemplateHaskell,
+FlexibleContexts,
 NoImplicitPrelude
   #-}
 
@@ -14,7 +15,7 @@ module Main where
 import BasePrelude hiding (
   threadDelay,
   catch,
-  readMVar, takeMVar, newMVar, putMVar, modifyMVar_ )
+  withMVar, readMVar, takeMVar, newMVar, putMVar, modifyMVar_ )
 -- Lenses
 import Lens.Micro.GHC hiding ((&))
 import Lens.Micro.TH
@@ -49,6 +50,7 @@ import Telegram
 
 
 data Goal = Goal {
+  goalStart       :: UTCTime,
   goalEnd         :: UTCTime,
   goalLength      :: NominalDiffTime,
   originalMessage :: Message,
@@ -65,16 +67,20 @@ data GoalResult
   deriving (Show)
 
 data UserData = UserData {
-  _userStatus    :: Status,
-  _archivedGoals :: [(Goal, GoalResult)] }
+  _status        :: Status,
+  _archivedGoals :: [(Goal, GoalResult)],
+  _dayEnd        :: TimeOfDay,
+  _timeZone      :: TimeZone }
   deriving (Show)
 
 makeLenses ''UserData
 
 instance Default UserData where
   def = UserData {
-    _userStatus    = Resting,
-    _archivedGoals = [] }
+    _status        = Resting,
+    _archivedGoals = [],
+    _dayEnd        = TimeOfDay 6 0 0,  -- 6am
+    _timeZone      = utc }
 
 main :: IO ()
 main = void $ do
@@ -98,10 +104,10 @@ checkGoals :: MVar (Map UserId UserData) -> Telegram ()
 checkGoals userDataVar = modifyMVar_ userDataVar $ \userData -> do
   currentTime <- liftIO getCurrentTime
   forM userData $ \ud ->
-    case ud ^. userStatus of
+    case ud ^. status of
       Doing goal | goalEnd goal < currentTime -> do
         respond (originalMessage goal) (quote (goalText goal))
-        return $ ud & userStatus .~ Judging goal
+        return $ ud & status .~ Judging goal
       _other -> return ud
 
 processMessage :: MVar (Map UserId UserData) -> Message -> Telegram ()
@@ -121,37 +127,37 @@ processMessage userDataVar message = void $ runMaybeT $ do
   -- because we no longer have to care about missing entries.
   -- 
   -- Also print help (because it's a new user).
-  newUser <- M.member (userId user) <$> readMVar userDataVar
+  newUser <- M.notMember (userId user) <$> readMVar userDataVar
   when newUser $ do
     lift $ respond_ message helpText
     modifyMVar_ userDataVar $ \userData -> return $
       M.insert (userId user) def userData
 
-  thisUserData <- (M.! userId user) <$> readMVar userDataVar
-  let status = thisUserData ^. userStatus
+  UserData{..} <- (M.! userId user) <$> readMVar userDataVar
 
   currentTime <- liftIO $ getCurrentTime
 
   let setGoal :: Goal -> Telegram ()
       setGoal goal = modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . userStatus .~ Doing goal
+        userData & ix (userId user) . status .~ Doing goal
 
   let startFromNow :: Goal -> Goal
       startFromNow goal = goal {
-        goalEnd = addUTCTime (goalLength goal) currentTime }
+        goalStart = currentTime,
+        goalEnd   = addUTCTime (goalLength goal) currentTime }
 
   let archiveGoal :: Goal -> GoalResult -> Telegram ()
       archiveGoal goal res = modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . userStatus .~ Resting
+        userData & ix (userId user) . status .~ Resting
                  & ix (userId user) . archivedGoals %~ ((goal, res) :)
 
   lift $ case text of
     -- “?” means “query status”
     "?" -> do
-      statusText <- liftIO $ showStatus status
+      statusText <- liftIO $ showStatus _status
       respond_ message statusText
 
-    "done" -> case status of
+    "done" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing goal -> do
@@ -165,7 +171,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
       Judging goal ->
         archiveGoal goal Completed
 
-    "fail" -> case status of
+    "fail" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing goal -> do
@@ -174,7 +180,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
       Judging goal ->
         archiveGoal goal Failed
 
-    "again" -> case status of
+    "again" -> case _status of
       Doing _ ->
         respond_ message "you haven't finished the previous goal"
       Judging _ ->
@@ -182,7 +188,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
                          \the goal you want to repeat; say “done, again” \
                          \or “fail, again”"
       Resting ->
-        case thisUserData ^? archivedGoals . _head of
+        case _archivedGoals ^? _head of
           Nothing ->
             respond_ message "can't do anything “again” since you \
                              \haven't ever scheduled any goals"
@@ -192,7 +198,7 @@ processMessage userDataVar message = void $ runMaybeT $ do
                                "repeating this"
             setGoal (startFromNow goal)
 
-    "done, again" -> case status of
+    "done, again" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing goal -> do
@@ -208,16 +214,17 @@ processMessage userDataVar message = void $ runMaybeT $ do
         archiveGoal goal Completed
         setGoal (startFromNow goal)
 
-    "fail, again" -> case status of
+    "fail, again" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing _ ->
+        -- TODO: allow fail&again
         respond_ message "ignored (use reset instead)"
       Judging goal -> do
         archiveGoal goal Failed
         setGoal (startFromNow goal)
 
-    "reset" -> case status of
+    "reset" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing goal -> do
@@ -228,15 +235,37 @@ processMessage userDataVar message = void $ runMaybeT $ do
 
     "help" -> respond_ message helpText
 
+    "stats" -> do
+      let bounds = getDayBounds currentTime _dayEnd _timeZone
+      let results = do
+            (goal, goalRes) <- _archivedGoals
+            Just todayStatus <- return (goalTodayStatus bounds (goal, goalRes))
+            return (goal, goalRes, todayStatus)
+      respond_ message (showStats (reverse results))
+
+    -- “now is 10.30” or something (needed to figure out the time zone)
+    _ | Just (h, m) <- parseNowIs text -> do
+      let tz = guessTimeZone currentTime (TimeOfDay h m 0)
+      modifyMVar_ userDataVar $ \userData -> return $
+        userData & ix (userId user) . timeZone .~ tz
+      respond_ message (format "okay, stored your timezone ({})" [show tz])
+
+    -- “end of day at 6.00”
+    _ | Just (h, m) <- parseEndOfDayAt text -> do
+      modifyMVar_ userDataVar $ \userData -> return $
+        userData & ix (userId user) . dayEnd .~ TimeOfDay h m 0
+      respond_ message "okay"
+
     -- If the message a valid goal that can be parsed, either schedule it or
     -- say that the user already has an active/judged goal
     _ | Just (duration, goalText) <- parseGoal text ->
-      case status of
+      case _status of
         Doing   _ -> respond_ message "you already are doing something"
         Judging _ -> respond_ message "you still haven't said anything about \
                                       \the previous goal"
         Resting ->
           setGoal Goal {
+            goalStart       = currentTime,
             goalEnd         = addUTCTime duration currentTime,
             goalLength      = duration,
             originalMessage = message,
@@ -279,15 +308,69 @@ helpText = T.unlines [
   "",
   "——————————",
   "",
-  "to specify time you can also use stuff like “1h45m”, “3m30s”, and “1ч20м”" ]
+  "to specify time you can also use stuff like “1h45m”, “3m30s”, and “1ч20м”",
+  "",
+  "——————————",
+  "",
+  "in order for stats to work correctly, say what time it is now (“now is \
+  \HH.MM”) and say when your day ends (“end of day at HH.MM”; if you don't \
+  \do this we're going to assume 6am)"
+  ]
+
+-- Stats
+
+data GoalTodayStatus = Partly NominalDiffTime | Fully
+  deriving (Show)
+
+goalTodayStatus
+  :: (UTCTime, UTCTime)
+  -> (Goal, GoalResult)
+  -> Maybe GoalTodayStatus
+goalTodayStatus (start, end) (Goal{..}, result)
+  -- ended before the day started, or started after the day ended
+  | actualGoalEnd <= start || goalStart >= end = Nothing
+  -- started and ended during the day
+  | goalStart >= start && actualGoalEnd <= end = Just Fully
+  -- otherwise, it intersects with the day somehow
+  | otherwise = Just $ Partly $ diffUTCTime (min end actualGoalEnd)
+                                            (max start goalStart)
+  where
+    actualGoalEnd = case result of
+      CompletedEarly x -> addUTCTime (-x) goalEnd
+      _                -> goalEnd
+
+showStats :: [(Goal, GoalResult, GoalTodayStatus)] -> Text
+showStats [] = "today you did nothing"
+showStats xs = T.unlines $ concat [
+  ["completed goals today:"],
+  [""],
+  map (("  • " <>) . showGoal) xs,
+  [""],
+  [format "time spent doing stuff: {}"
+          [showDuration (sum (map usefulTime xs))]]]
+  where
+    usefulTime (Goal{..}, Failed          , _       ) = 0
+    usefulTime (Goal{..}, _               , Partly x) = x
+    usefulTime (Goal{..}, Completed       , Fully   ) = goalLength
+    usefulTime (Goal{..}, CompletedEarly x, Fully   ) = goalLength - x
+    --
+    showGoal (Goal{..}, Completed, Fully) =
+      format "{} – {}" (goalText, showDuration goalLength)
+    showGoal (Goal{..}, CompletedEarly x, Fully) =
+      format "{} – {}" (goalText, showDuration (goalLength - x))
+    showGoal (Goal{..}, Failed, Fully) =
+      format "{} – {} (failed)" (goalText, showDuration goalLength)
+    showGoal (Goal{..}, Completed, Partly x) =
+      format "{} – {} (partly today)" (goalText, showDuration x)
+    showGoal (Goal{..}, CompletedEarly _, Partly x) =
+      format "{} – {} (partly today)" (goalText, showDuration x)
+    showGoal (Goal{..}, Failed, Partly x) =
+      format "{} – {} (partly today, failed)" (goalText, showDuration x)
 
 -- Parsing
 
 parseGoal :: Text -> Maybe (NominalDiffTime, Text)
-parseGoal = parseMaybe goalP
-
-goalP :: Parser (NominalDiffTime, Text)
-goalP = do
+parseGoal = parseMaybe $ do
   duration <- durationP
   skipSome spaceChar
   rest <- many anyChar
@@ -304,6 +387,23 @@ durationP = do
       strings "s sec    с сек" *> pure n ]
   return (fromInteger (sum items))
 
+hmP :: Parser (Int, Int)
+hmP = do
+  h <- fromIntegral <$> integer
+  char '.' <|> char ':'
+  m <- fromIntegral <$> integer
+  return (h, m)
+
+parseNowIs :: Text -> Maybe (Int, Int)
+parseNowIs = parseMaybe $ do
+  string "now is "
+  hmP
+
+parseEndOfDayAt :: Text -> Maybe (Int, Int)
+parseEndOfDayAt = parseMaybe $ do
+  string "end of day at "
+  hmP
+
 -- Utils
 
 ignoreErrors :: Telegram a -> Telegram ()
@@ -312,11 +412,50 @@ ignoreErrors x = void x `catchError` (liftIO . print)
 ignoreExceptions :: Telegram a -> Telegram ()
 ignoreExceptions x = void x `catch` \(SomeException a) -> liftIO (print a)
 
+getDayBounds
+  :: UTCTime              -- ^ Current time (UTC)
+  -> TimeOfDay            -- ^ Start of day
+  -> TimeZone             -- ^ Time zone
+  -> (UTCTime, UTCTime)   -- ^ (some moment in time that is before now,
+                          --    some moment in time that is after now)
+getDayBounds currentTime start zone =
+  (trueStartOfDay, succDay trueStartOfDay)
+  where
+    timeThere = utcToLocalTime zone currentTime
+    someStartOfDay = localTimeToUTC zone timeThere{localTimeOfDay = start}
+    trueStartOfDay =
+      if someStartOfDay >= currentTime
+        then until (< currentTime) predDay someStartOfDay
+        else predDay $ until (>= currentTime) succDay someStartOfDay
+
+predDay :: UTCTime -> UTCTime
+predDay t = t { utctDay = pred (utctDay t),
+                utctDayTime = min 86400 (utctDayTime t) }
+
+succDay :: UTCTime -> UTCTime
+succDay t = t { utctDay = succ (utctDay t),
+                utctDayTime = min 86400 (utctDayTime t) }
+
+guessTimeZone
+  :: UTCTime    -- ^ Current time
+  -> TimeOfDay  -- ^ Time
+  -> TimeZone
+guessTimeZone currentTime timeThere = minutesToTimeZone diffMinutes''
+  where
+    timeHere = timeToTimeOfDay (utctDayTime currentTime)
+    diffMinutes = (todHour timeThere - todHour timeHere) * 60 +
+                  (todMin timeThere - todMin timeHere)
+    -- the difference between 2 times must be between −12 and 12h
+    -- (UTC+14 actually exists but let's say it's the same as UTC-10)
+    diffMinutes'  = diffMinutes `mod` (24*60)
+    diffMinutes'' = if diffMinutes' > 12*60 then diffMinutes' - 24*60
+                                            else diffMinutes'
+
 showDuration :: NominalDiffTime -> Text
 showDuration diff = do
   let (h, rest) = (ceiling diff :: Integer) `divMod` 3600
       (m, s)    = rest `divMod` 60
-  if | h == 0 && m == 0 && s == 0 -> "nothing"
+  if | h == 0 && m == 0 && s == 0 -> "0 seconds"
      | h == 0 && m < 5 ->
          -- being precise
          T.unwords $ [showPlural m "minute" | m /= 0] ++

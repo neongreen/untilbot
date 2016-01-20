@@ -260,7 +260,7 @@ showStatus (Judging x) =
 
 helpText :: Text
 helpText = T.unlines [
-  "write something like “10m wash dishes” to set a goal, and in 10 minutes\
+  "write something like “10m wash dishes” to set a goal, and in 10 minutes \
   \you'll be notified about it; then you can say:",
   "",
   "  • “done” if you have done it",

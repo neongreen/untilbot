@@ -4,6 +4,8 @@ OverloadedStrings,
 MultiWayIf,
 TemplateHaskell,
 FlexibleContexts,
+TypeFamilies,
+RankNTypes,
 NoImplicitPrelude
   #-}
 
@@ -12,16 +14,14 @@ module Main where
 
 
 -- General
-import BasePrelude hiding (
-  threadDelay,
-  catch,
-  withMVar, readMVar, takeMVar, newMVar, putMVar, modifyMVar_ )
+import BasePrelude hiding (threadDelay, catch)
 -- Lenses
-import Lens.Micro.GHC hiding ((&))
-import Lens.Micro.TH
+import Lens.Micro.Platform hiding ((&))
 -- Default
 import Data.Default.Class
--- Monad transformers
+-- Monads and monad transformers
+import Control.Monad.Reader
+import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad.Trans.Maybe
 -- Containers
@@ -39,6 +39,9 @@ import Data.Text.Format.Params (Params)
 import Text.Megaparsec hiding (Message)
 import Text.Megaparsec.Text
 import Text.Megaparsec.Lexer (integer)
+-- acid-state
+import Data.Acid as Acid
+import Data.SafeCopy
 -- Concurrency and MVars
 import Control.Concurrent.Lifted
 -- Exceptions
@@ -50,15 +53,19 @@ import Telegram
 
 
 data Goal = Goal {
-  goalStart       :: UTCTime,
-  goalEnd         :: UTCTime,
-  goalLength      :: NominalDiffTime,
-  originalMessage :: Message,
-  goalText        :: Text }
+  goalStart    :: UTCTime,
+  goalEnd      :: UTCTime,
+  goalLength   :: NominalDiffTime,
+  originalChat :: ChatId,
+  goalText     :: Text }
   deriving (Show)
+
+deriveSafeCopy 0 'base ''Goal
 
 data Status = Resting | Doing Goal | Judging Goal
   deriving (Show)
+
+deriveSafeCopy 0 'base ''Status
 
 data GoalResult
   = CompletedEarly NominalDiffTime
@@ -66,12 +73,16 @@ data GoalResult
   | Failed
   deriving (Show)
 
+deriveSafeCopy 0 'base ''GoalResult
+
 data UserData = UserData {
   _status        :: Status,
   _archivedGoals :: [(Goal, GoalResult)],
   _dayEnd        :: TimeOfDay,
   _timeZone      :: TimeZone }
   deriving (Show)
+
+deriveSafeCopy 0 'base ''UserData
 
 makeLenses ''UserData
 
@@ -82,36 +93,93 @@ instance Default UserData where
     _dayEnd        = TimeOfDay 6 0 0,  -- 6am
     _timeZone      = utc }
 
+data BotState = BotState {
+  _userData :: Map UserId UserData }
+
+deriveSafeCopy 0 'base ''BotState
+
+makeLenses ''BotState
+
+instance Default BotState where
+  def = BotState {
+    _userData = mempty }
+
+archiveGoal :: UserId -> GoalResult -> Acid.Update BotState ()
+archiveGoal user res = do
+  mbStatus <- gets (preview (userData.(ix user).status))
+  userData.(ix user).status .= Resting
+  case mbStatus of
+    Just (Doing   goal) -> userData.(ix user).archivedGoals %= ((goal, res) :)
+    Just (Judging goal) -> userData.(ix user).archivedGoals %= ((goal, res) :)
+    Just Resting        -> return ()
+    Nothing             -> return ()
+
+setGoal :: UserId -> Goal -> Acid.Update BotState ()
+setGoal user goal = do
+  userData.(ix user).status .= Doing goal
+
+setStatus :: UserId -> Status -> Acid.Update BotState ()
+setStatus user st = do
+  userData.(ix user).status .= st
+
+userPresent :: UserId -> Acid.Query BotState Bool
+userPresent user = has (userData.(ix user)) <$> ask
+
+addUser :: UserId -> UserData -> Acid.Update BotState ()
+addUser user dt = userData.(at user) .= Just dt
+
+setDayEnd :: UserId -> TimeOfDay -> Acid.Update BotState ()
+setDayEnd user t = userData.(ix user).dayEnd .= t
+
+setTimeZone :: UserId -> TimeZone -> Acid.Update BotState ()
+setTimeZone user tz = userData.(ix user).timeZone .= tz
+
+getUserData :: UserId -> Acid.Query BotState (Maybe UserData)
+getUserData user = view (userData.(at user))
+
+getAllUserData :: Acid.Query BotState (Map UserId UserData)
+getAllUserData = view userData
+
+makeAcidic ''BotState [
+  'archiveGoal, 'setGoal, 'setStatus,
+  'userPresent, 'addUser,
+  'setDayEnd, 'setTimeZone,
+  'getUserData, 'getAllUserData ]
+
+type DB = AcidState BotState
+
 main :: IO ()
 main = void $ do
   botToken <- T.readFile "telegram-token"
-  runTelegram botToken bot
+  db <- openLocalStateFrom "state/" def
+  createArchive db
+  runTelegram botToken (bot db)
+  closeAcidState db
 
-bot :: Telegram ()
-bot = do
-  -- Create a variable holding user data.
-  userDataVar <- newMVar mempty
+bot :: DB -> Telegram ()
+bot db = do
   -- Run the goal-checking loop.
   fork $ forever $ ignoreErrors $ do
-    checkGoals userDataVar
+    checkGoals db
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
   onUpdateLoop $ \Update{..} ->
-    ignoreErrors $ ignoreExceptions $ processMessage userDataVar message
+    ignoreErrors $ ignoreExceptions $ processMessage db message
 
 -- Check every goal and send messages about ones that have ended.
-checkGoals :: MVar (Map UserId UserData) -> Telegram ()
-checkGoals userDataVar = modifyMVar_ userDataVar $ \userData -> do
-  currentTime <- liftIO getCurrentTime
-  forM userData $ \ud ->
-    case ud ^. status of
+checkGoals :: DB -> Telegram ()
+checkGoals db = do
+  currentTime <- liftIO $ getCurrentTime
+  allUserData <- liftIO $ query db GetAllUserData
+  for_ (M.toList allUserData) $ \(user, UserData{..}) ->
+    case _status of
       Doing goal | goalEnd goal < currentTime -> do
-        respond (originalMessage goal) (quote (goalText goal))
-        return $ ud & status .~ Judging goal
-      _other -> return ud
+        liftIO $ update db (SetStatus user (Judging goal))
+        sendMessage_ (originalChat goal) (quote (goalText goal))
+      _ -> return ()
 
-processMessage :: MVar (Map UserId UserData) -> Message -> Telegram ()
-processMessage userDataVar message = void $ runMaybeT $ do
+processMessage :: DB -> Message -> Telegram ()
+processMessage db message = void $ runMaybeT $ do
   -- Both user and message text have to be present (otherwise we don't do
   -- anything).
   -- 
@@ -120,36 +188,31 @@ processMessage userDataVar message = void $ runMaybeT $ do
   -- 
   -- Read about MaybeT if you don't understand how this works.
   user <- liftMaybe (from message)
+  let uid = userId user
   text <- liftMaybe (text message)
 
-  -- If we haven't seen this user yet, create an empty UserData record for
-  -- nem. This makes 'setGoal', 'archiveGoal', and getting status simpler,
-  -- because we no longer have to care about missing entries.
-  -- 
-  -- Also print help (because it's a new user).
-  newUser <- M.notMember (userId user) <$> readMVar userDataVar
-  when newUser $ do
-    lift $ respond_ message helpText
-    modifyMVar_ userDataVar $ \userData -> return $
-      M.insert (userId user) def userData
+  let update_ :: (MonadIO m, EventState event ~ BotState, UpdateEvent event)
+              => event -> m (EventResult event)
+      update_ x = liftIO $ update db x
+      query_ :: (MonadIO m, EventState event ~ BotState, QueryEvent event)
+             => event -> m (EventResult event)
+      query_ x = liftIO $ query db x
 
-  UserData{..} <- (M.! userId user) <$> readMVar userDataVar
+  -- If we haven't seen this user yet, add nem to the database and print help
+  -- (because it's a new user).
+  newUser <- not <$> query_ (UserPresent uid)
+  when newUser $ do
+    update_ (AddUser uid def)
+    lift $ respond_ message helpText
+
+  Just UserData{..} <- query_ (GetUserData uid)
 
   currentTime <- liftIO $ getCurrentTime
-
-  let setGoal :: Goal -> Telegram ()
-      setGoal goal = modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . status .~ Doing goal
 
   let startFromNow :: Goal -> Goal
       startFromNow goal = goal {
         goalStart = currentTime,
         goalEnd   = addUTCTime (goalLength goal) currentTime }
-
-  let archiveGoal :: Goal -> GoalResult -> Telegram ()
-      archiveGoal goal res = modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . status .~ Resting
-                 & ix (userId user) . archivedGoals %~ ((goal, res) :)
 
   lift $ case text of
     -- “?” means “query status”
@@ -163,22 +226,22 @@ processMessage userDataVar message = void $ runMaybeT $ do
       Doing goal -> do
         let leftTime = diffUTCTime (goalEnd goal) (date message)
         if leftTime <= 0
-          then archiveGoal goal Completed
+          then update_ (ArchiveGoal uid Completed)
           else do
+            update_ (ArchiveGoal uid (CompletedEarly leftTime))
             respond_ message $ format "okay, you finished {} early"
                                       [showDuration leftTime]
-            archiveGoal goal (CompletedEarly leftTime)
-      Judging goal ->
-        archiveGoal goal Completed
+      Judging _ ->
+        update_ (ArchiveGoal uid Completed)
 
     "fail" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
-      Doing goal -> do
+      Doing _ -> do
+        update_ (ArchiveGoal uid Failed)
         respond_ message "okay"
-        archiveGoal goal Failed
-      Judging goal ->
-        archiveGoal goal Failed
+      Judging _ ->
+        update_ (ArchiveGoal uid Failed)
 
     "again" -> case _status of
       Doing _ ->
@@ -193,10 +256,10 @@ processMessage userDataVar message = void $ runMaybeT $ do
             respond_ message "can't do anything “again” since you \
                              \haven't ever scheduled any goals"
           Just (goal, _) -> do
+            update_ (SetGoal uid (startFromNow goal))
             respond_ message $ quote (goalText goal) <>
                                blankline <>
                                "repeating this"
-            setGoal (startFromNow goal)
 
     "done, again" -> case _status of
       Resting ->
@@ -204,15 +267,15 @@ processMessage userDataVar message = void $ runMaybeT $ do
       Doing goal -> do
         let leftTime = diffUTCTime (goalEnd goal) (date message)
         if leftTime <= 0
-          then archiveGoal goal Completed
+          then update_ (ArchiveGoal uid Completed)
           else do
+            update_ (ArchiveGoal uid (CompletedEarly leftTime))
             respond_ message $ format "okay, you finished {} early"
                                       [showDuration leftTime]
-            archiveGoal goal (CompletedEarly leftTime)
-        setGoal (startFromNow goal)
+        update_ (SetGoal uid (startFromNow goal))
       Judging goal -> do
-        archiveGoal goal Completed
-        setGoal (startFromNow goal)
+        update_ (ArchiveGoal uid Completed)
+        update_ (SetGoal uid (startFromNow goal))
 
     "fail, again" -> case _status of
       Resting ->
@@ -221,17 +284,17 @@ processMessage userDataVar message = void $ runMaybeT $ do
         -- TODO: allow fail&again
         respond_ message "ignored (use reset instead)"
       Judging goal -> do
-        archiveGoal goal Failed
-        setGoal (startFromNow goal)
+        update_ (ArchiveGoal uid Failed)
+        update_ (SetGoal uid (startFromNow goal))
 
     "reset" -> case _status of
       Resting ->
         respond_ message "but you weren't doing anything"
       Doing goal -> do
+        update_ (SetGoal uid (startFromNow goal))
         respond_ message "okay"
-        setGoal (startFromNow goal)
       Judging goal ->
-        setGoal (startFromNow goal)
+        update_ (SetGoal uid (startFromNow goal))
 
     "help" -> respond_ message helpText
 
@@ -246,14 +309,12 @@ processMessage userDataVar message = void $ runMaybeT $ do
     -- “now is 10.30” or something (needed to figure out the time zone)
     _ | Just (h, m) <- parseNowIs text -> do
       let tz = guessTimeZone currentTime (TimeOfDay h m 0)
-      modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . timeZone .~ tz
+      update_ (SetTimeZone uid tz)
       respond_ message (format "okay, stored your timezone ({})" [show tz])
 
     -- “end of day at 6.00”
     _ | Just (h, m) <- parseEndOfDayAt text -> do
-      modifyMVar_ userDataVar $ \userData -> return $
-        userData & ix (userId user) . dayEnd .~ TimeOfDay h m 0
+      update_ (SetDayEnd uid (TimeOfDay h m 0))
       respond_ message "okay"
 
     -- If the message a valid goal that can be parsed, either schedule it or
@@ -264,15 +325,17 @@ processMessage userDataVar message = void $ runMaybeT $ do
         Judging _ -> respond_ message "you still haven't said anything about \
                                       \the previous goal"
         Resting ->
-          setGoal Goal {
-            goalStart       = currentTime,
-            goalEnd         = addUTCTime duration currentTime,
-            goalLength      = duration,
-            originalMessage = message,
-            goalText        = goalText }
+          update_ $ SetGoal uid Goal {
+            goalStart    = currentTime,
+            goalEnd      = addUTCTime duration currentTime,
+            goalLength   = duration,
+            originalChat = chatId (chat message),
+            goalText     = goalText }
 
     -- Otherwise, tell the user we couldn't parse the command
     _ -> respond_ message "couldn't parse what you said"
+
+  liftIO $ createCheckpoint db
 
 showStatus :: Status -> IO Text
 showStatus Resting = return "you're not doing anything"

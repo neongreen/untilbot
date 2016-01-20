@@ -24,7 +24,8 @@ executable untilbot
   main-is:             Main.hs
   other-modules:       Telegram
   -- other-extensions:    
-  build-depends:       aeson >= 0.9.0.1
+  build-depends:       acid-state >= 0.14
+                     , aeson >= 0.9.0.1
                      , api-builder == 0.11.*
                      , base >= 4.8 && < 4.9
                      , base-prelude >= 0.1.21 && < 0.2
@@ -34,9 +35,10 @@ executable untilbot
                      , http-client >= 0.4.20
                      , lifted-base >= 0.2.3
                      , megaparsec >= 0.4.3
-                     , microlens-ghc >= 0.4.1
+                     , microlens-platform >= 0.2.1
                      , microlens-th >= 0.3
                      , mtl == 2.2.*
+                     , safecopy >= 0.9.0.1
                      , text == 1.2.*
                      , text-format >= 0.3.1
                      , time >= 1.5.0.1

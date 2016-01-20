@@ -15,7 +15,7 @@ module Telegram
   runTelegram,
 
   -- * Types
-  UserId,
+  UserId, ChatId, MessageId, UpdateId,
   User(..),
   Chat(..),
   Update(..),
@@ -26,7 +26,7 @@ module Telegram
   getUpdates,
   getMessages,
   SendMessageParams(..),
-  sendMessage, sendMessage',
+  sendMessage, sendMessage_, sendMessage', sendMessage'_,
   respond, respond_, respond', respond'_,
   reply,
   onUpdateLoop,
@@ -66,7 +66,10 @@ runTelegram token = execAPI (telegram token) TelegramState {
 data TelegramState = TelegramState {
   nextOffset :: Maybe Integer }
 
-type UserId = Integer
+type UserId    = Integer
+type ChatId    = Integer      -- TODO: or can be Text
+type MessageId = Integer
+type UpdateId  = Integer
 
 data User = User {
   userId    :: UserId,
@@ -84,7 +87,7 @@ instance FromJSON User where
     return User{..}
 
 data Message = Message {
-  messageId :: Integer,
+  messageId :: MessageId,
   from      :: Maybe User,
   date      :: UTCTime,
   chat      :: Chat,
@@ -101,7 +104,7 @@ instance FromJSON Message where
     return Message{..}
 
 data Chat = Chat {
-  chatId :: Integer }   -- TODO: or can be String
+  chatId :: ChatId }
   deriving (Show, Eq)
 
 instance FromJSON Chat where
@@ -236,9 +239,15 @@ instance Default SendMessageParams where
 sendMessage :: Integer -> Text -> Telegram Message
 sendMessage chatId text = sendMessage' chatId text def
 
+sendMessage_ :: Integer -> Text -> Telegram ()
+sendMessage_ chatId text = void $ sendMessage chatId text
+
 sendMessage' :: Integer -> Text -> SendMessageParams -> Telegram Message
 sendMessage' chatId text params =
   result <$> runRoute (sendMessageRoute chatId text params)
+
+sendMessage'_ :: Integer -> Text -> SendMessageParams -> Telegram ()
+sendMessage'_ chatId text params = void $ sendMessage' chatId text params
 
 respond :: Message -> Text -> Telegram Message
 respond msg text = respond' msg text def

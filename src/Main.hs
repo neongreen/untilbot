@@ -128,6 +128,9 @@ userPresent user = has (userData.(ix user)) <$> ask
 addUser :: UserId -> UserData -> Acid.Update BotState ()
 addUser user dt = userData.(at user) .= Just dt
 
+removeUser :: UserId -> Acid.Update BotState ()
+removeUser user = userData.(at user) .= Nothing
+
 setDayEnd :: UserId -> TimeOfDay -> Acid.Update BotState ()
 setDayEnd user t = userData.(ix user).dayEnd .= t
 
@@ -142,7 +145,7 @@ getAllUserData = view userData
 
 makeAcidic ''BotState [
   'archiveGoal, 'setGoal, 'setStatus,
-  'userPresent, 'addUser,
+  'userPresent, 'addUser, 'removeUser,
   'setDayEnd, 'setTimeZone,
   'getUserData, 'getAllUserData ]
 
@@ -331,6 +334,10 @@ processMessage db message = void $ runMaybeT $ do
             goalLength   = duration,
             originalChat = chatId (chat message),
             goalText     = goalText }
+
+    "debug forget" -> do
+      liftIO $ update db (RemoveUser uid)
+      respond_ message "cleared all data about you and forgot you"
 
     -- Otherwise, tell the user we couldn't parse the command
     _ -> respond_ message "couldn't parse what you said"

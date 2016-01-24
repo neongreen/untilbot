@@ -162,12 +162,14 @@ main = void $ do
 bot :: DB -> Telegram ()
 bot db = do
   -- Run the goal-checking loop.
-  fork $ forever $ ignoreErrors $ do
+  fork $ forever $ ignoreErrors $ ignoreExceptions $ do
     checkGoals db
     threadDelay 1000000
   -- Run the loop that accepts incoming messages.
-  onUpdateLoop $ \Update{..} ->
-    ignoreErrors $ ignoreExceptions $ processMessage db message
+  forever $ ignoreErrors $ ignoreExceptions $ do
+    updates <- getUpdates
+    for_ updates $ \Update{..} ->
+      processMessage db message
 
 -- Check every goal and send messages about ones that have ended.
 checkGoals :: DB -> Telegram ()

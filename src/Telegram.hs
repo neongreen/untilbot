@@ -30,7 +30,6 @@ module Telegram
   sendMessage, sendMessage_, sendMessage', sendMessage'_,
   respond, respond_, respond', respond'_,
   reply,
-  onUpdateLoop,
 )
 where
 
@@ -279,8 +278,3 @@ respond'_ msg text params = void $ respond' msg text params
 reply :: Message -> Text -> Telegram Message
 reply msg text = respond' msg text def{
   replyTo = Just (messageId msg) }
-
-onUpdateLoop :: (Update -> Telegram a) -> Telegram ()
-onUpdateLoop handler = forever $ do
-  updates <- getUpdates
-  mapM_ handler updates

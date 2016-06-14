@@ -203,7 +203,7 @@ processMessage db message = void $ runMaybeT $ do
              => event -> m (EventResult event)
       query_ x = liftIO $ query db x
 
-  -- If we haven't seen this user yet, add nem to the database and print help
+  -- If we haven't seen this user yet, add them to the database and print help
   -- (because it's a new user).
   newUser <- not <$> query_ (UserPresent uid)
   when newUser $ do
